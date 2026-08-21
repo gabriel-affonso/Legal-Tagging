@@ -1,0 +1,20 @@
+{
+  "input_dir": "/Users/gabriel.affonso/Library/CloudStorage/OneDrive-Company/SharePoint/Documents/In",
+  "processing_dir": "/Users/gabriel.affonso/Documents/Document Management Ollama/processing",
+  "archive_dir": "/Users/gabriel.affonso/Documents/Document Management Ollama/archive",
+  "error_dir": "/Users/gabriel.affonso/Documents/Document Management Ollama/errors",
+  "log_dir": "/Users/gabriel.affonso/Documents/Document Management Ollama/logs",
+  "excel_path": "/Users/gabriel.affonso/Documents/Document Management Ollama/document_register.xlsx",
+  "ollama_url": "http://localhost:11434",
+  "ollama_model": "qwen3:8b",
+  "poll_interval_seconds": 300,
+  "minimum_file_age_seconds": 30,
+  "ocr_enabled": true,
+  "ocr_language": "por+eng",
+  "ocr_min_text_chars": 600,
+  "ocr_timeout_seconds": 600,
+  "ocr_dir": "/Users/gabriel.affonso/Documents/Document Management Ollama/ocr",
+  "max_pdf_pages": 12,
+  "max_text_chars": 24000,
+  "copy_only_recent_minutes": 0
+}
