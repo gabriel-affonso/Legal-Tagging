@@ -91,6 +91,9 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `lessor`
 - `lessee`
 - `property_address`
+- `property_name`
+- `property_number`
+- `property_display_name`
 - `contract_start_date`
 - `contract_end_date`
 - `rent_payment_day`
@@ -127,5 +130,6 @@ O Ollama trabalha em duas etapas: primeiro classifica o documento; depois usa a 
 - PDFs digitais normalmente nao precisam de OCR. PDFs escaneados como imagem passam pelo `ocrmypdf` quando `ocr_enabled` estiver ativo.
 - O Power Automate pode continuar fazendo o filtro de PDFs adicionados na última hora. Localmente, este programa também evita duplicados por hash.
 - Para contratos de arrendamento, o prompt já pede signatários, arrendador, arrendatário, datas e renda mensal.
-- `needs_review` fica `yes` quando a confiança é baixa/média, quando há notas de extração ou quando faltam campos essenciais de contratos/pagamentos.
+- `property_display_name` junta `property_name` e `property_number` automaticamente quando o LLM nao preencher a coluna conjunta.
+- `needs_review` fica `yes` quando a confiança é baixa/média, quando há notas de extração ou quando faltam campos essenciais de contratos/pagamentos. Em contratos, nome e numero da propriedade tambem contam como campos essenciais.
 - Erros de processamento são registrados no Excel com `processing_status=error` quando o arquivo já foi copiado para a área local.

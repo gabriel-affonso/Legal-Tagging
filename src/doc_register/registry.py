@@ -52,6 +52,9 @@ class ExcelRegister:
             result.lessor,
             result.lessee,
             result.property_address,
+            result.property_name,
+            result.property_number,
+            result.property_display_name,
             result.contract_start_date,
             result.contract_end_date,
             result.rent_payment_day,
@@ -89,7 +92,10 @@ class ExcelRegister:
             sheet = workbook[SHEET_NAME] if SHEET_NAME in workbook.sheetnames else workbook.active
             if sheet.title != SHEET_NAME:
                 sheet.title = SHEET_NAME
-            _ensure_headers(sheet)
+            migrated = _ensure_headers(sheet)
+            if migrated:
+                self._format(sheet)
+                workbook.save(self.path)
             return workbook, sheet
 
         workbook = Workbook()
@@ -124,11 +130,14 @@ class ExcelRegister:
             "O": 24,
             "Q": 22,
             "R": 54,
-            "V": 28,
-            "W": 28,
-            "X": 42,
-            "AJ": 54,
-            "AN": 80,
+            "S": 28,
+            "T": 20,
+            "U": 36,
+            "Y": 28,
+            "Z": 28,
+            "AA": 42,
+            "AM": 54,
+            "AQ": 80,
         }
         for column, width in widths.items():
             sheet.column_dimensions[column].width = width
@@ -139,7 +148,8 @@ class ExcelRegister:
             table.ref = f"A1:{last_column}{max(sheet.max_row, 1)}"
 
 
-def _ensure_headers(sheet) -> None:
+def _ensure_headers(sheet) -> bool:
+    migrated = False
     for index, expected in enumerate(REGISTER_COLUMNS, start=1):
         current = sheet.cell(row=1, column=index).value
         if current == expected:
@@ -150,7 +160,10 @@ def _ensure_headers(sheet) -> None:
         ]
         if expected not in existing_headers:
             sheet.insert_cols(index)
+            migrated = True
         sheet.cell(row=1, column=index).value = expected
+        migrated = True
+    return migrated
 
 
 def _column_letter(index: int) -> str:

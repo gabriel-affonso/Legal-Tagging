@@ -35,6 +35,9 @@ class ExtractionResult:
     lessor: str = ""
     lessee: str = ""
     property_address: str = ""
+    property_name: str = ""
+    property_number: str = ""
+    property_display_name: str = ""
     contract_start_date: str = ""
     contract_end_date: str = ""
     rent_payment_day: str = ""
@@ -80,6 +83,9 @@ REGISTER_COLUMNS = [
     "lessor",
     "lessee",
     "property_address",
+    "property_name",
+    "property_number",
+    "property_display_name",
     "contract_start_date",
     "contract_end_date",
     "rent_payment_day",

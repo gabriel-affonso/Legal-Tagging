@@ -109,6 +109,7 @@ class DocumentProcessor:
         result.text_source = extracted_text.source
         result.native_text_chars = str(extracted_text.native_text_chars)
         result.ocr_text_chars = str(extracted_text.ocr_text_chars)
+        _normalize_property_fields(result)
         if extracted_text.notes:
             result.extraction_notes = _join_notes(result.extraction_notes, extracted_text.notes)
         _apply_review_status(result)
@@ -168,6 +169,8 @@ def _apply_review_status(result) -> None:
             "lessor",
             "lessee",
             "property_address",
+            "property_name",
+            "property_number",
             "monthly_rent",
         ],
         "payment_proof": [
@@ -185,3 +188,17 @@ def _apply_review_status(result) -> None:
     result.processed_ok = "yes"
     result.needs_review = "yes" if reasons else "no"
     result.review_reason = _join_notes(result.review_reason, ", ".join(reasons))
+
+
+def _normalize_property_fields(result) -> None:
+    if result.property_display_name.strip():
+        return
+
+    property_name = result.property_name.strip()
+    property_number = result.property_number.strip()
+    if property_name and property_number:
+        result.property_display_name = f"{property_name} - {property_number}"
+    elif property_name:
+        result.property_display_name = property_name
+    elif property_number:
+        result.property_display_name = property_number

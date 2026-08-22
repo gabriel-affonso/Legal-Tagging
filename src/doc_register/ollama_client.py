@@ -52,6 +52,9 @@ Required focus:
 - lessor/landlord/owner
 - lessee/tenant
 - property_address
+- property_name: the building, unit, estate, project, apartment, room, shop, or asset name/label if visible
+- property_number: the unit, fraction, lot, apartment number, shop number, internal property id, or asset number if visible
+- property_display_name: combine property_name and property_number in one readable value
 - contract_start_date
 - contract_end_date
 - rent_payment_day
@@ -69,6 +72,7 @@ Required focus:
 - payment_method
 - payment_reference
 - payment_description
+- property_name and property_number if the paid rent/property is identified
 """,
     "invoice_or_receipt": """Extract invoice or receipt metadata from the PDF text.
 
@@ -76,6 +80,7 @@ Required focus:
 - document_date
 - payer or customer when visible
 - payee or vendor when visible
+- property_name and property_number when visible
 - payment_amount or invoice total
 - currency
 - payment_reference
@@ -117,6 +122,7 @@ Required focus:
 - document_subtype
 - document_date
 - parties, amounts, references, and concise summary when visible
+- property_name and property_number when visible
 """,
 }
 
@@ -138,6 +144,9 @@ Return this exact JSON object:
   "lessor": "",
   "lessee": "",
   "property_address": "",
+  "property_name": "",
+  "property_number": "",
+  "property_display_name": "",
   "contract_start_date": "",
   "contract_end_date": "",
   "rent_payment_day": "",
