@@ -25,6 +25,11 @@ O processamento é híbrido e conservador:
 8. Validação pós-LLM, normalização e regras negativas.
 9. Marcação automática de `needs_review` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes ou valores suspeitos.
 
+Se o Ollama local expirar, o pipeline não perde o documento inteiro:
+
+- timeout na primeira avaliação: registra resultado baseado nas regras determinísticas e marca revisão;
+- timeout na segunda avaliação: mantém a classificação inicial, grava a nota de timeout e marca revisão.
+
 Regras de segurança importantes:
 
 - IBAN, NIB, BIC/SWIFT, número de conta ou referência bancária nunca devem ser usados como `payment_amount`.
@@ -68,6 +73,9 @@ Edite `config.json` e ajuste principalmente:
 - `log_dir`: pasta dos logs persistentes.
 - `excel_path`: caminho do arquivo Excel que será criado/atualizado.
 - `ollama_model`: modelo local disponível no Ollama. Nesta máquina, `qwen3:8b` já aparece instalado.
+- `ollama_timeout_seconds`: tempo máximo para cada chamada ao Ollama local antes de marcar revisão e seguir o lote.
+- `llm_classification_words`: número de palavras usadas na primeira avaliação quando o PDF não tem marcação de páginas.
+- `llm_extraction_max_chars`: limite de caracteres destacados enviados para a segunda avaliação.
 - `ocr_enabled`: ativa OCR quando o PDF não tiver texto legível suficiente.
 - `ocr_language`: use `por+eng` para documentos em português e inglês.
 - `ocr_min_text_chars`: mínimo de caracteres extraídos antes de considerar que OCR é necessário.
@@ -186,4 +194,5 @@ As categorias oficiais são:
 ```bash
 python3 -m compileall src
 PYTHONPATH=src python3 -m unittest tests/test_detectors.py tests/test_text_selection.py
+PYTHONPATH=src python3 -m unittest tests/test_ollama_client.py
 ```

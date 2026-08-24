@@ -15,6 +15,9 @@ class AppConfig:
     excel_path: Path
     ollama_url: str
     ollama_model: str
+    ollama_timeout_seconds: int
+    llm_classification_words: int
+    llm_extraction_max_chars: int
     poll_interval_seconds: int
     minimum_file_age_seconds: int
     ocr_enabled: bool
@@ -49,6 +52,9 @@ class AppConfig:
             excel_path=as_path("excel_path"),
             ollama_url=str(raw.get("ollama_url", "http://localhost:11434")).rstrip("/"),
             ollama_model=str(raw.get("ollama_model", "qwen3:8b")),
+            ollama_timeout_seconds=int(raw.get("ollama_timeout_seconds", 600)),
+            llm_classification_words=int(raw.get("llm_classification_words", 500)),
+            llm_extraction_max_chars=int(raw.get("llm_extraction_max_chars", 8000)),
             poll_interval_seconds=int(raw.get("poll_interval_seconds", 300)),
             minimum_file_age_seconds=int(raw.get("minimum_file_age_seconds", 30)),
             ocr_enabled=_as_bool(raw.get("ocr_enabled", True)),

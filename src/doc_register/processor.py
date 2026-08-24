@@ -108,8 +108,14 @@ class DocumentProcessor:
             LOGGER.warning("%s: %s", candidate.copied_path.name, extracted_text.notes)
 
         signals = detect_signals(candidate.source_path.name, extracted_text.text)
-        classification_text = select_classification_text(extracted_text.text)
-        highlighted_text = select_highlighted_relevant_text(extracted_text.text)
+        classification_text = select_classification_text(
+            extracted_text.text,
+            fallback_words=self.config.llm_classification_words,
+        )
+        highlighted_text = select_highlighted_relevant_text(
+            extracted_text.text,
+            max_chars=self.config.llm_extraction_max_chars,
+        )
 
         LOGGER.info(
             "Sending classification sample and highlighted excerpts from %s to local Ollama model %s",
@@ -123,6 +129,7 @@ class DocumentProcessor:
             classification_text=classification_text,
             highlighted_text=highlighted_text,
             signals=signals,
+            timeout_seconds=self.config.ollama_timeout_seconds,
         )
         result.text_source = extracted_text.source
         result.native_text_chars = str(extracted_text.native_text_chars)

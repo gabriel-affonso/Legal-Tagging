@@ -11,6 +11,10 @@ from .models import ExtractionResult
 from .schemas import CATEGORY_EXTRACTION_FIELDS, OFFICIAL_CATEGORIES
 
 
+class OllamaTimeoutError(RuntimeError):
+    pass
+
+
 SYSTEM_PROMPT = """You extract structured metadata from confidential Portuguese and English PDFs.
 You run locally through Ollama. Never suggest or require external/cloud processing.
 Return only valid JSON, without markdown. If a field is not present, use an empty string.
@@ -134,6 +138,7 @@ def extract_with_ollama(
     classification_text: str,
     highlighted_text: str,
     signals: DeterministicSignals,
+    timeout_seconds: int = 600,
 ) -> ExtractionResult:
     if len(classification_text.strip()) < 200 and len(highlighted_text.strip()) < 200:
         return ExtractionResult(
@@ -146,17 +151,28 @@ def extract_with_ollama(
             raw_json={"deterministic": signals.to_dict(), "llm": {}},
         )
 
-    classification = classify_with_ollama(base_url, model, file_name, classification_text, signals)
+    try:
+        classification = classify_with_ollama(base_url, model, file_name, classification_text, signals, timeout_seconds)
+    except OllamaTimeoutError as exc:
+        return _timeout_fallback_result(signals, "classification", exc)
+
     category = _normalize_category(classification.get("document_category", signals.suggested_category))
-    extraction = extract_metadata_with_ollama(
-        base_url,
-        model,
-        file_name,
-        highlighted_text,
-        signals,
-        category,
-        classification,
-    )
+    try:
+        extraction = extract_metadata_with_ollama(
+            base_url,
+            model,
+            file_name,
+            highlighted_text,
+            signals,
+            category,
+            classification,
+            timeout_seconds,
+        )
+    except OllamaTimeoutError as exc:
+        extraction = {
+            "confidence": "low",
+            "extraction_notes": f"Timeout na segunda avaliacao do Ollama local: {exc}",
+        }
     merged = {**classification, **extraction, "document_category": category}
     llm_json = {"classification": classification, "extraction": extraction}
     return _result_from_dict(
@@ -178,6 +194,7 @@ def classify_with_ollama(
     file_name: str,
     classification_text: str,
     signals: DeterministicSignals,
+    timeout_seconds: int,
 ) -> dict[str, Any]:
     return _chat_json(
         base_url,
@@ -188,6 +205,7 @@ def classify_with_ollama(
             category_list=_category_list(),
             classification_text=classification_text,
         ),
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -199,6 +217,7 @@ def extract_metadata_with_ollama(
     signals: DeterministicSignals,
     document_category: str,
     classification: dict[str, Any],
+    timeout_seconds: int,
 ) -> dict[str, Any]:
     schema = _blank_schema(document_category)
     return _chat_json(
@@ -213,10 +232,11 @@ def extract_metadata_with_ollama(
             guardrails=CATEGORY_PROMPT_TREE.get(document_category, CATEGORY_PROMPT_TREE["other"]),
             highlighted_text=highlighted_text,
         ),
+        timeout_seconds=timeout_seconds,
     )
 
 
-def _chat_json(base_url: str, model: str, user_prompt: str) -> dict[str, Any]:
+def _chat_json(base_url: str, model: str, user_prompt: str, *, timeout_seconds: int) -> dict[str, Any]:
     payload = {
         "model": model,
         "format": "json",
@@ -237,8 +257,10 @@ def _chat_json(base_url: str, model: str, user_prompt: str) -> dict[str, Any]:
     )
 
     try:
-        with request.urlopen(http_request, timeout=180) as response:
+        with request.urlopen(http_request, timeout=timeout_seconds) as response:
             raw_response = json.loads(response.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise OllamaTimeoutError(f"timeout after {timeout_seconds}s") from exc
     except error.URLError as exc:
         raise RuntimeError(f"Could not connect to local Ollama at {base_url}: {exc}") from exc
 
@@ -271,6 +293,20 @@ def _result_from_dict(raw: dict[str, Any]) -> ExtractionResult:
         deterministic_json=deterministic_json if isinstance(deterministic_json, dict) else {},
         llm_json=llm_json if isinstance(llm_json, dict) else {},
         raw_json=raw_json if isinstance(raw_json, dict) else raw,
+    )
+
+
+def _timeout_fallback_result(signals: DeterministicSignals, step: str, exc: Exception) -> ExtractionResult:
+    deterministic_json = signals.to_dict()
+    llm_json = {"error": {"step": step, "message": str(exc)}}
+    return ExtractionResult(
+        document_category=signals.suggested_category,
+        document_type="",
+        confidence="low",
+        extraction_notes=f"Timeout na {step} do Ollama local; resultado baseado apenas em regras deterministicas.",
+        deterministic_json=deterministic_json,
+        llm_json=llm_json,
+        raw_json={"deterministic": deterministic_json, "llm": llm_json},
     )
 
 
