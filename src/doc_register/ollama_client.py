@@ -6,25 +6,30 @@ import re
 from typing import Any
 from urllib import error, request
 
+from .detectors import DeterministicSignals
 from .models import ExtractionResult
+from .schemas import CATEGORY_EXTRACTION_FIELDS, OFFICIAL_CATEGORIES
 
 
-SYSTEM_PROMPT = """You extract structured metadata from Portuguese and English real-estate and business PDFs.
-Return only valid JSON. If a field is not present, use an empty string.
-Dates should use ISO format YYYY-MM-DD when possible. Monetary values should keep only the number.
-Do not invent facts. Prefer low confidence when the text is incomplete, OCR-like, or ambiguous."""
+SYSTEM_PROMPT = """You extract structured metadata from confidential Portuguese and English PDFs.
+You run locally through Ollama. Never suggest or require external/cloud processing.
+Return only valid JSON, without markdown. If a field is not present, use an empty string.
+Do not invent facts. Use low confidence when text is incomplete, OCR-like, or ambiguous.
+Never use IBAN, NIB, BIC/SWIFT, account numbers, or banking references as payment_amount.
+Never use a bank name or bank account holder as property_name.
+property_address must be the property location, not the owner's fiscal address."""
 
 
-CLASSIFICATION_PROMPT_TEMPLATE = """Classify the PDF text below.
+CLASSIFICATION_PROMPT_TEMPLATE = """Classify the document using only the official categories.
 
-Use exactly one of these document_category values:
-- lease_contract: contrato de arrendamento, lease, rental agreement
-- payment_proof: comprovativo/comprovante de pagamento, recibo, transferencia, bank transfer proof
-- invoice_or_receipt: fatura, recibo, invoice, receipt not clearly a payment proof
-- identification: identity, company registration, tax id, passport, citizen card
-- tax_document: tax, fiscal, declaration, certidao
-- correspondence: letter, email export, notification
-- other: anything else
+File name:
+{file_name}
+
+Deterministic signals:
+{deterministic_json}
+
+Official categories:
+{category_list}
 
 Return this exact JSON object:
 {{
@@ -38,181 +43,133 @@ Return this exact JSON object:
   "extraction_notes": ""
 }}
 
-PDF text:
-{pdf_text}
+Relevant text excerpts:
+{selected_text}
 """
 
 
-EXTRACTION_PROMPTS = {
-    "lease_contract": """Extract lease/rental contract metadata from the PDF text.
+EXTRACTION_PROMPT_TEMPLATE = """Extract metadata for category "{document_category}".
 
-Required focus:
-- signed_date
-- contract_type
-- lessor/landlord/owner
-- lessee/tenant
-- property_address
-- property_name: the building, unit, estate, project, apartment, room, shop, or asset name/label if visible
-- property_number: the unit, fraction, lot, apartment number, shop number, internal property id, or asset number if visible
-- property_display_name: combine property_name and property_number in one readable value
-- contract_start_date
-- contract_end_date
-- rent_payment_day
-- monthly_rent
-- currency
-""",
-    "payment_proof": """Extract payment proof metadata from the PDF text.
+File name:
+{file_name}
 
-Required focus:
-- payment_date
-- payer
-- payee
-- payment_amount
-- currency
-- payment_method
-- payment_reference
-- payment_description
-- property_name and property_number if the paid rent/property is identified
-""",
-    "invoice_or_receipt": """Extract invoice or receipt metadata from the PDF text.
+Deterministic signals:
+{deterministic_json}
 
-Required focus:
-- document_date
-- payer or customer when visible
-- payee or vendor when visible
-- property_name and property_number when visible
-- payment_amount or invoice total
-- currency
-- payment_reference
-- payment_description
-""",
-    "identification": """Extract identification metadata from the PDF text.
+Only return these fields:
+{schema_json}
 
-Required focus:
-- document_type
-- document_subtype
-- document_date
-- parties or person/company names when visible
-- summary
-""",
-    "tax_document": """Extract tax document metadata from the PDF text.
+Category-specific guardrails:
+{guardrails}
 
-Required focus:
-- document_type
-- document_subtype
-- document_date
-- person/company names when visible
-- payment_amount or tax amount when visible
-- currency
-- summary
-""",
-    "correspondence": """Extract correspondence metadata from the PDF text.
+Relevant text excerpts:
+{selected_text}
+"""
 
-Required focus:
-- document_type
-- document_date
-- sender as payer if useful
-- recipient as payee if useful
-- summary
-""",
-    "other": """Extract generic document register metadata from the PDF text.
 
-Required focus:
-- document_type
-- document_subtype
-- document_date
-- parties, amounts, references, and concise summary when visible
-- property_name and property_number when visible
-""",
+GUARDRAILS = {
+    "lease_contract": (
+        "Extract lessor, lessee, property, dates, rent day, monthly rent and currency only when explicit. "
+        "Do not fill bank fields unless bank data is clearly part of payment instructions."
+    ),
+    "property_document": (
+        "Prioritize property article, section, parish, municipality, district, location/address and owner fields. "
+        "Do not fill lessor or lessee unless a real lease relationship appears."
+    ),
+    "bank_details": (
+        "Extract IBAN, NIB, BIC/SWIFT, bank name, account holder and account number. "
+        "Do not classify as payment proof unless there is a clear completed payment with date, payer, payee and amount."
+    ),
+    "payment_proof": (
+        "payment_amount requires monetary context such as EUR, €, amount, montante, valor, total or clear payment wording. "
+        "Do not confuse IBAN, NIB, BIC/SWIFT, account number or reference with payment_amount."
+    ),
+    "invoice_or_receipt": (
+        "Extract invoice/receipt date, parties, total and description. "
+        "Only use payment_proof semantics when this is clearly a bank transfer/payment proof."
+    ),
+    "identity_document": "Extract identity or company identification metadata only when explicit.",
+    "tax_document": "Extract fiscal metadata, taxpayer names/IDs and amounts only when explicit.",
+    "correspondence": "Extract sender/recipient-like parties only if useful, plus concise summary.",
+    "other": "Extract only conservative metadata. Empty fields are better than guesses.",
 }
 
 
-EXTRACTION_PROMPT_TEMPLATE = """Document category selected in step 1: {document_category}
-
-{category_instructions}
-
-Return this exact JSON object:
-{{
-  "document_category": "",
-  "document_type": "",
-  "document_subtype": "",
-  "document_date": "",
-  "summary": "",
-  "language": "",
-  "signed_date": "",
-  "contract_type": "",
-  "lessor": "",
-  "lessee": "",
-  "property_address": "",
-  "property_name": "",
-  "property_number": "",
-  "property_display_name": "",
-  "contract_start_date": "",
-  "contract_end_date": "",
-  "rent_payment_day": "",
-  "monthly_rent": "",
-  "currency": "",
-  "payment_date": "",
-  "payer": "",
-  "payee": "",
-  "payment_amount": "",
-  "payment_method": "",
-  "payment_reference": "",
-  "payment_description": "",
-  "confidence": "low|medium|high",
-  "extraction_notes": ""
-}}
-
-PDF text:
-{pdf_text}
-"""
-
-
-def extract_with_ollama(base_url: str, model: str, pdf_text: str) -> ExtractionResult:
-    if len(pdf_text.strip()) < 200:
+def extract_with_ollama(
+    base_url: str,
+    model: str,
+    *,
+    file_name: str,
+    selected_text: str,
+    signals: DeterministicSignals,
+) -> ExtractionResult:
+    if len(selected_text.strip()) < 200:
         return ExtractionResult(
+            document_category=signals.suggested_category,
             document_type="",
             confidence="low",
             extraction_notes="Pouco texto extraido do PDF. Pode ser necessario OCR ou revisao manual.",
+            deterministic_json=signals.to_dict(),
+            llm_json={},
+            raw_json={"deterministic": signals.to_dict(), "llm": {}},
         )
 
-    classification = classify_with_ollama(base_url, model, pdf_text)
-    category = _normalize_category(classification.get("document_category", "other"))
-    extraction = extract_metadata_with_ollama(base_url, model, pdf_text, category)
+    classification = classify_with_ollama(base_url, model, file_name, selected_text, signals)
+    category = _normalize_category(classification.get("document_category", signals.suggested_category))
+    extraction = extract_metadata_with_ollama(base_url, model, file_name, selected_text, signals, category)
     merged = {**classification, **extraction, "document_category": category}
+    llm_json = {"classification": classification, "extraction": extraction}
     return _result_from_dict(
         {
             **merged,
+            "deterministic_json": signals.to_dict(),
+            "llm_json": llm_json,
             "raw_json": {
-                "classification": classification,
-                "extraction": extraction,
+                "deterministic": signals.to_dict(),
+                "llm": llm_json,
             },
         }
     )
 
 
-def classify_with_ollama(base_url: str, model: str, pdf_text: str) -> dict[str, Any]:
+def classify_with_ollama(
+    base_url: str,
+    model: str,
+    file_name: str,
+    selected_text: str,
+    signals: DeterministicSignals,
+) -> dict[str, Any]:
     return _chat_json(
         base_url,
         model,
-        CLASSIFICATION_PROMPT_TEMPLATE.format(pdf_text=_classification_text(pdf_text)),
+        CLASSIFICATION_PROMPT_TEMPLATE.format(
+            file_name=file_name,
+            deterministic_json=json.dumps(signals.to_dict(), ensure_ascii=False, indent=2),
+            category_list=_category_list(),
+            selected_text=selected_text,
+        ),
     )
 
 
 def extract_metadata_with_ollama(
     base_url: str,
     model: str,
-    pdf_text: str,
+    file_name: str,
+    selected_text: str,
+    signals: DeterministicSignals,
     document_category: str,
 ) -> dict[str, Any]:
-    instructions = EXTRACTION_PROMPTS.get(document_category, EXTRACTION_PROMPTS["other"])
+    schema = _blank_schema(document_category)
     return _chat_json(
         base_url,
         model,
         EXTRACTION_PROMPT_TEMPLATE.format(
             document_category=document_category,
-            category_instructions=instructions,
-            pdf_text=pdf_text,
+            file_name=file_name,
+            deterministic_json=json.dumps(signals.to_dict(), ensure_ascii=False, indent=2),
+            schema_json=json.dumps(schema, ensure_ascii=False, indent=2),
+            guardrails=GUARDRAILS.get(document_category, GUARDRAILS["other"]),
+            selected_text=selected_text,
         ),
     )
 
@@ -241,7 +198,7 @@ def _chat_json(base_url: str, model: str, user_prompt: str) -> dict[str, Any]:
         with request.urlopen(http_request, timeout=180) as response:
             raw_response = json.loads(response.read().decode("utf-8"))
     except error.URLError as exc:
-        raise RuntimeError(f"Could not connect to Ollama at {base_url}: {exc}") from exc
+        raise RuntimeError(f"Could not connect to local Ollama at {base_url}: {exc}") from exc
 
     content = raw_response.get("message", {}).get("content", "")
     return _parse_json_object(content)
@@ -262,10 +219,17 @@ def _parse_json_object(content: str) -> dict[str, Any]:
 
 
 def _result_from_dict(raw: dict[str, Any]) -> ExtractionResult:
-    allowed = set(asdict(ExtractionResult()).keys()) - {"raw_json"}
+    allowed = set(asdict(ExtractionResult()).keys()) - {"raw_json", "deterministic_json", "llm_json"}
     cleaned = {key: _clean(raw.get(key, "")) for key in allowed}
+    deterministic_json = raw.get("deterministic_json", {})
+    llm_json = raw.get("llm_json", {})
     raw_json = raw.get("raw_json", raw)
-    return ExtractionResult(**cleaned, raw_json=raw_json if isinstance(raw_json, dict) else raw)
+    return ExtractionResult(
+        **cleaned,
+        deterministic_json=deterministic_json if isinstance(deterministic_json, dict) else {},
+        llm_json=llm_json if isinstance(llm_json, dict) else {},
+        raw_json=raw_json if isinstance(raw_json, dict) else raw,
+    )
 
 
 def _clean(value: Any) -> str:
@@ -276,11 +240,16 @@ def _clean(value: Any) -> str:
     return str(value).strip()
 
 
-def _classification_text(pdf_text: str) -> str:
-    return pdf_text[:8000]
-
-
 def _normalize_category(category: str) -> str:
     value = category.strip().lower()
-    allowed = set(EXTRACTION_PROMPTS)
-    return value if value in allowed else "other"
+    if value == "identification":
+        value = "identity_document"
+    return value if value in OFFICIAL_CATEGORIES else "other"
+
+
+def _blank_schema(document_category: str) -> dict[str, str]:
+    return {field_name: "" for field_name in CATEGORY_EXTRACTION_FIELDS.get(document_category, CATEGORY_EXTRACTION_FIELDS["other"])}
+
+
+def _category_list() -> str:
+    return "\n".join(f"- {category}: {description}" for category, description in OFFICIAL_CATEGORIES.items())

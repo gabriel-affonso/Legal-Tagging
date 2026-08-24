@@ -7,10 +7,13 @@ import shutil
 from pathlib import Path
 
 from .config import AppConfig
+from .detectors import detect_signals
 from .models import PdfCandidate
 from .ollama_client import extract_with_ollama
 from .pdf_text import extract_text_with_optional_ocr
 from .registry import ExcelRegister
+from .text_selection import select_relevant_text
+from .validators import validate_result
 
 
 LOGGER = logging.getLogger(__name__)
@@ -104,15 +107,27 @@ class DocumentProcessor:
         if extracted_text.notes:
             LOGGER.warning("%s: %s", candidate.copied_path.name, extracted_text.notes)
 
-        LOGGER.info("Sending %s to Ollama model %s", candidate.copied_path.name, self.config.ollama_model)
-        result = extract_with_ollama(self.config.ollama_url, self.config.ollama_model, extracted_text.text)
+        signals = detect_signals(candidate.source_path.name, extracted_text.text)
+        selected_text = select_relevant_text(extracted_text.text)
+
+        LOGGER.info(
+            "Sending selected excerpts from %s to local Ollama model %s",
+            candidate.copied_path.name,
+            self.config.ollama_model,
+        )
+        result = extract_with_ollama(
+            self.config.ollama_url,
+            self.config.ollama_model,
+            file_name=candidate.source_path.name,
+            selected_text=selected_text,
+            signals=signals,
+        )
         result.text_source = extracted_text.source
         result.native_text_chars = str(extracted_text.native_text_chars)
         result.ocr_text_chars = str(extracted_text.ocr_text_chars)
-        _normalize_property_fields(result)
         if extracted_text.notes:
             result.extraction_notes = _join_notes(result.extraction_notes, extracted_text.notes)
-        _apply_review_status(result)
+        validate_result(result, signals, extracted_text.text)
         self.register.append(candidate, result)
 
         archive_path = self.config.archive_dir / candidate.copied_path.name
@@ -152,53 +167,3 @@ def _error_result(exc: Exception):
         error_message=str(exc)[:1000],
         confidence="low",
     )
-
-
-def _apply_review_status(result) -> None:
-    reasons = []
-    confidence = result.confidence.strip().lower()
-    if confidence in {"", "low", "medium"}:
-        reasons.append(f"confidence={confidence or 'blank'}")
-
-    if result.extraction_notes.strip():
-        reasons.append("extraction_notes")
-
-    required_by_category = {
-        "lease_contract": [
-            "signed_date",
-            "lessor",
-            "lessee",
-            "property_address",
-            "property_name",
-            "property_number",
-            "monthly_rent",
-        ],
-        "payment_proof": [
-            "payment_date",
-            "payer",
-            "payee",
-            "payment_amount",
-        ],
-    }
-    for field_name in required_by_category.get(result.document_category, []):
-        if not getattr(result, field_name).strip():
-            reasons.append(f"missing_{field_name}")
-
-    result.processing_status = "processed"
-    result.processed_ok = "yes"
-    result.needs_review = "yes" if reasons else "no"
-    result.review_reason = _join_notes(result.review_reason, ", ".join(reasons))
-
-
-def _normalize_property_fields(result) -> None:
-    if result.property_display_name.strip():
-        return
-
-    property_name = result.property_name.strip()
-    property_number = result.property_number.strip()
-    if property_name and property_number:
-        result.property_display_name = f"{property_name} - {property_number}"
-    elif property_name:
-        result.property_display_name = property_name
-    elif property_number:
-        result.property_display_name = property_number

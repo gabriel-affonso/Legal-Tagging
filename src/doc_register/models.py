@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .schemas import REGISTER_COLUMNS
+
 
 @dataclass(frozen=True)
 class PdfCandidate:
@@ -30,19 +32,36 @@ class ExtractionResult:
     document_date: str = ""
     summary: str = ""
     language: str = ""
+    confidence: str = ""
+    extraction_notes: str = ""
     signed_date: str = ""
     contract_type: str = ""
     lessor: str = ""
     lessee: str = ""
-    property_address: str = ""
     property_name: str = ""
     property_number: str = ""
     property_display_name: str = ""
+    property_article: str = ""
+    property_section: str = ""
+    property_parish: str = ""
+    property_municipality: str = ""
+    property_district: str = ""
+    property_location: str = ""
+    property_address: str = ""
+    owner_name: str = ""
+    owner_tax_id: str = ""
+    owner_address: str = ""
     contract_start_date: str = ""
     contract_end_date: str = ""
     rent_payment_day: str = ""
     monthly_rent: str = ""
     currency: str = ""
+    bank_account_holder: str = ""
+    iban: str = ""
+    nib: str = ""
+    bic_swift: str = ""
+    bank_name: str = ""
+    bank_account_number: str = ""
     payment_date: str = ""
     payer: str = ""
     payee: str = ""
@@ -50,61 +69,12 @@ class ExtractionResult:
     payment_method: str = ""
     payment_reference: str = ""
     payment_description: str = ""
-    confidence: str = ""
-    extraction_notes: str = ""
     text_source: str = ""
     native_text_chars: str = ""
     ocr_text_chars: str = ""
+    deterministic_json: dict[str, Any] = field(default_factory=dict)
+    llm_json: dict[str, Any] = field(default_factory=dict)
     raw_json: dict[str, Any] = field(default_factory=dict)
-
-
-REGISTER_COLUMNS = [
-    "processed_at",
-    "source_file_name",
-    "copied_file_path",
-    "sha256",
-    "file_created_at",
-    "file_modified_at",
-    "processing_status",
-    "processed_ok",
-    "needs_review",
-    "review_reason",
-    "reviewed_by",
-    "reviewed_at",
-    "error_message",
-    "document_category",
-    "document_type",
-    "document_subtype",
-    "document_date",
-    "summary",
-    "language",
-    "signed_date",
-    "contract_type",
-    "lessor",
-    "lessee",
-    "property_address",
-    "property_name",
-    "property_number",
-    "property_display_name",
-    "contract_start_date",
-    "contract_end_date",
-    "rent_payment_day",
-    "monthly_rent",
-    "currency",
-    "payment_date",
-    "payer",
-    "payee",
-    "payment_amount",
-    "payment_method",
-    "payment_reference",
-    "payment_description",
-    "confidence",
-    "extraction_notes",
-    "text_source",
-    "native_text_chars",
-    "ocr_text_chars",
-    "raw_json",
-]
 
 
 @dataclass(frozen=True)

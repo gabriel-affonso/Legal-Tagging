@@ -27,53 +27,20 @@ class ExcelRegister:
 
     def append(self, candidate: PdfCandidate, result: ExtractionResult) -> None:
         workbook, sheet = self._load()
-        row = [
-            datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            candidate.source_path.name,
-            str(candidate.copied_path),
-            candidate.sha256,
-            candidate.created_at.isoformat(),
-            candidate.modified_at.isoformat(),
-            result.processing_status,
-            result.processed_ok,
-            result.needs_review,
-            result.review_reason,
-            result.reviewed_by,
-            result.reviewed_at,
-            result.error_message,
-            result.document_category,
-            result.document_type,
-            result.document_subtype,
-            result.document_date,
-            result.summary,
-            result.language,
-            result.signed_date,
-            result.contract_type,
-            result.lessor,
-            result.lessee,
-            result.property_address,
-            result.property_name,
-            result.property_number,
-            result.property_display_name,
-            result.contract_start_date,
-            result.contract_end_date,
-            result.rent_payment_day,
-            result.monthly_rent,
-            result.currency,
-            result.payment_date,
-            result.payer,
-            result.payee,
-            result.payment_amount,
-            result.payment_method,
-            result.payment_reference,
-            result.payment_description,
-            result.confidence,
-            result.extraction_notes,
-            result.text_source,
-            result.native_text_chars,
-            result.ocr_text_chars,
-            json.dumps(result.raw_json, ensure_ascii=False),
-        ]
+        operational = {
+            "processed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "source_file_name": candidate.source_path.name,
+            "copied_file_path": str(candidate.copied_path),
+            "sha256": candidate.sha256,
+            "file_created_at": candidate.created_at.isoformat(),
+            "file_modified_at": candidate.modified_at.isoformat(),
+        }
+        row = []
+        for column in REGISTER_COLUMNS:
+            value = operational.get(column, getattr(result, column, ""))
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            row.append(value)
         sheet.append(row)
         self._format(sheet)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,29 +85,35 @@ class ExcelRegister:
 
     def _format(self, sheet) -> None:
         sheet.freeze_panes = "A2"
-        widths = {
-            "A": 22,
-            "B": 32,
-            "C": 48,
-            "D": 66,
-            "G": 24,
-            "J": 44,
-            "M": 54,
-            "N": 24,
-            "O": 24,
-            "Q": 22,
-            "R": 54,
-            "S": 28,
-            "T": 20,
-            "U": 36,
-            "Y": 28,
-            "Z": 28,
-            "AA": 42,
-            "AM": 54,
-            "AQ": 80,
+        widths_by_header = {
+            "processed_at": 22,
+            "source_file_name": 34,
+            "copied_file_path": 48,
+            "sha256": 66,
+            "processing_status": 20,
+            "review_reason": 48,
+            "error_message": 54,
+            "document_category": 24,
+            "document_type": 26,
+            "document_date": 18,
+            "summary": 54,
+            "extraction_notes": 42,
+            "lessor": 34,
+            "lessee": 34,
+            "property_display_name": 42,
+            "property_address": 48,
+            "owner_address": 48,
+            "bank_account_holder": 34,
+            "iban": 34,
+            "payment_description": 54,
+            "deterministic_json": 80,
+            "llm_json": 80,
+            "raw_json": 80,
         }
-        for column, width in widths.items():
-            sheet.column_dimensions[column].width = width
+        for index, header in enumerate(REGISTER_COLUMNS, start=1):
+            width = widths_by_header.get(header)
+            if width:
+                sheet.column_dimensions[_column_letter(index)].width = width
 
         if sheet.tables:
             table = next(iter(sheet.tables.values()))
@@ -149,21 +122,28 @@ class ExcelRegister:
 
 
 def _ensure_headers(sheet) -> bool:
-    migrated = False
-    for index, expected in enumerate(REGISTER_COLUMNS, start=1):
-        current = sheet.cell(row=1, column=index).value
-        if current == expected:
-            continue
-        existing_headers = [
-            sheet.cell(row=1, column=column).value
-            for column in range(1, max(sheet.max_column, len(REGISTER_COLUMNS)) + 1)
-        ]
-        if expected not in existing_headers:
-            sheet.insert_cols(index)
-            migrated = True
-        sheet.cell(row=1, column=index).value = expected
-        migrated = True
-    return migrated
+    existing_headers = [
+        sheet.cell(row=1, column=column).value
+        for column in range(1, max(sheet.max_column, len(REGISTER_COLUMNS)) + 1)
+    ]
+    existing_headers = [str(header) if header is not None else "" for header in existing_headers]
+    if existing_headers[: len(REGISTER_COLUMNS)] == REGISTER_COLUMNS:
+        return False
+
+    rows: list[dict[str, object]] = []
+    for row_index in range(2, sheet.max_row + 1):
+        row_data: dict[str, object] = {}
+        for column_index, header in enumerate(existing_headers, start=1):
+            if header:
+                row_data[header] = sheet.cell(row=row_index, column=column_index).value
+        rows.append(row_data)
+
+    if sheet.max_column:
+        sheet.delete_cols(1, sheet.max_column)
+    sheet.append(REGISTER_COLUMNS)
+    for row_data in rows:
+        sheet.append([row_data.get(column, "") for column in REGISTER_COLUMNS])
+    return True
 
 
 def _column_letter(index: int) -> str:

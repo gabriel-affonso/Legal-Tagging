@@ -1,14 +1,35 @@
 # Document Management Ollama
 
-Programa local para criar um register de documentos a partir de PDFs sincronizados do SharePoint/OneDrive, usando Ollama para classificar e extrair metadados e Excel para guardar o resultado.
+Programa local para criar um register de documentos a partir de PDFs sincronizados do SharePoint/OneDrive, usando regras determinísticas, OCR local, Ollama local e Excel. A v2 foi desenhada para documentos confidenciais: não usa cloud, APIs externas ou fallback remoto.
 
 ## Fluxo
 
 1. O Power Automate continua a copiar os PDFs aprovados para uma pasta no SharePoint.
 2. O OneDrive/SharePoint Sync coloca essa pasta no seu PC.
-3. Este programa monitora a pasta local, copia PDFs novos para `processing/`, extrai texto/OCR, classifica o documento com Ollama, extrai os campos do tipo detectado e adiciona uma linha em `document_register.xlsx`.
+3. Este programa monitora a pasta local, copia PDFs novos para `processing/`, extrai texto/OCR, aplica regras determinísticas, seleciona trechos relevantes, chama o Ollama local para classificação/extração semântica e adiciona uma linha em `document_register.xlsx`.
 4. Cada PDF é identificado por SHA-256, então o mesmo documento não é registrado duas vezes.
-5. Cada execução grava eventos em `logs/processing.log`.
+5. A saída do LLM é validada e normalizada antes de entrar no Excel.
+6. Cada execução grava eventos em `logs/processing.log`.
+
+## Pipeline v2
+
+O processamento é híbrido e conservador:
+
+1. Regras determinísticas por nome do arquivo e regex no texto.
+2. Extração local de IBAN, NIB, BIC/SWIFT, NIF/NIPC, datas, valores e sinais prediais.
+3. Seleção de trechos relevantes: primeiras páginas e janelas perto de termos como contrato, caderneta, artigo, IBAN, pagamento, beneficiário e ordenante.
+4. Classificação com Ollama local usando nome do arquivo, sinais determinísticos e trechos curtos.
+5. Extração com schema específico por categoria.
+6. Validação pós-LLM, normalização e regras negativas.
+7. Marcação automática de `needs_review` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes ou valores suspeitos.
+
+Regras de segurança importantes:
+
+- IBAN, NIB, BIC/SWIFT, número de conta ou referência bancária nunca devem ser usados como `payment_amount`.
+- Nome de banco ou titular de conta não deve virar `property_name`.
+- `payment_amount` só é aceite quando há contexto claro de valor/montante/total/pagamento.
+- `property_address` deve ser a morada/localização do imóvel; morada fiscal ou sede vai para revisão e pode ser movida para `owner_address`.
+- Documentos com dados bancários mas sem prova clara de pagamento são tratados como `bank_details`, não `payment_proof`.
 
 ## Instalação
 
@@ -86,19 +107,36 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `document_date`
 - `summary`
 - `language`
+- `confidence`
+- `extraction_notes`
 - `signed_date`
 - `contract_type`
 - `lessor`
 - `lessee`
-- `property_address`
 - `property_name`
 - `property_number`
 - `property_display_name`
+- `property_article`
+- `property_section`
+- `property_parish`
+- `property_municipality`
+- `property_district`
+- `property_location`
+- `property_address`
+- `owner_name`
+- `owner_tax_id`
+- `owner_address`
 - `contract_start_date`
 - `contract_end_date`
 - `rent_payment_day`
 - `monthly_rent`
 - `currency`
+- `bank_account_holder`
+- `iban`
+- `nib`
+- `bic_swift`
+- `bank_name`
+- `bank_account_number`
 - `payment_date`
 - `payer`
 - `payee`
@@ -106,30 +144,39 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `payment_method`
 - `payment_reference`
 - `payment_description`
-- `confidence`
-- `extraction_notes`
 - `text_source`
 - `native_text_chars`
 - `ocr_text_chars`
+- `deterministic_json`
+- `llm_json`
 - `raw_json`
 
-## Categorias do Ollama
+## Categorias oficiais
 
-O Ollama trabalha em duas etapas: primeiro classifica o documento; depois usa a categoria escolhida para extrair campos específicos. As categorias atuais são:
+O Ollama trabalha em duas etapas, mas sempre condicionado pelos sinais determinísticos locais. As categorias oficiais são:
 
 - `lease_contract`: contrato de arrendamento.
-- `payment_proof`: comprovativo/comprovante de pagamento ou transferencia.
-- `invoice_or_receipt`: fatura ou recibo que nao seja claramente comprovativo de pagamento.
-- `identification`: documentos de identificacao ou registos.
+- `property_document`: caderneta predial, certidão predial, CRP, registo predial, matriz ou averbamento.
+- `bank_details`: IBAN, NIB, BIC/SWIFT, titular de conta e dados bancários sem prova clara de pagamento.
+- `payment_proof`: comprovativo de transferência/pagamento com data, pagador, beneficiário e valor.
+- `invoice_or_receipt`: fatura ou recibo que não seja claramente comprovativo bancário.
+- `identity_document`: documentos de identificação pessoal ou empresarial.
 - `tax_document`: documentos fiscais.
-- `correspondence`: cartas, notificacoes e comunicacoes.
+- `correspondence`: cartas, notificações e comunicações.
 - `other`: documentos que nao encaixam nas categorias anteriores.
 
 ## Notas importantes
 
 - PDFs digitais normalmente nao precisam de OCR. PDFs escaneados como imagem passam pelo `ocrmypdf` quando `ocr_enabled` estiver ativo.
 - O Power Automate pode continuar fazendo o filtro de PDFs adicionados na última hora. Localmente, este programa também evita duplicados por hash.
-- Para contratos de arrendamento, o prompt já pede signatários, arrendador, arrendatário, datas e renda mensal.
-- `property_display_name` junta `property_name` e `property_number` automaticamente quando o LLM nao preencher a coluna conjunta.
-- `needs_review` fica `yes` quando a confiança é baixa/média, quando há notas de extração ou quando faltam campos essenciais de contratos/pagamentos. Em contratos, nome e numero da propriedade tambem contam como campos essenciais.
+- Para contratos de arrendamento, o schema pede signatários, arrendador, arrendatário, datas e renda mensal.
+- `property_display_name` é montado automaticamente com nome, artigo, secção e número quando o LLM não preencher a coluna conjunta.
+- `needs_review` fica `yes` quando a confiança é baixa/média, quando há notas de extração, quando a categoria determinística diverge da categoria do LLM, quando faltam campos essenciais ou quando há campos suspeitos.
 - Erros de processamento são registrados no Excel com `processing_status=error` quando o arquivo já foi copiado para a área local.
+
+## Validações locais
+
+```bash
+python3 -m compileall src
+PYTHONPATH=src python3 -m unittest tests/test_detectors.py
+```
