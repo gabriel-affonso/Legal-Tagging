@@ -12,7 +12,7 @@ from .models import PdfCandidate
 from .ollama_client import extract_with_ollama
 from .pdf_text import extract_text_with_optional_ocr
 from .registry import ExcelRegister
-from .text_selection import select_relevant_text
+from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .validators import validate_result
 
 
@@ -108,10 +108,11 @@ class DocumentProcessor:
             LOGGER.warning("%s: %s", candidate.copied_path.name, extracted_text.notes)
 
         signals = detect_signals(candidate.source_path.name, extracted_text.text)
-        selected_text = select_relevant_text(extracted_text.text)
+        classification_text = select_classification_text(extracted_text.text)
+        highlighted_text = select_highlighted_relevant_text(extracted_text.text)
 
         LOGGER.info(
-            "Sending selected excerpts from %s to local Ollama model %s",
+            "Sending classification sample and highlighted excerpts from %s to local Ollama model %s",
             candidate.copied_path.name,
             self.config.ollama_model,
         )
@@ -119,7 +120,8 @@ class DocumentProcessor:
             self.config.ollama_url,
             self.config.ollama_model,
             file_name=candidate.source_path.name,
-            selected_text=selected_text,
+            classification_text=classification_text,
+            highlighted_text=highlighted_text,
             signals=signals,
         )
         result.text_source = extracted_text.source

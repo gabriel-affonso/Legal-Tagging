@@ -21,6 +21,7 @@ property_address must be the property location, not the owner's fiscal address."
 
 
 CLASSIFICATION_PROMPT_TEMPLATE = """Classify the document using only the official categories.
+This is the first evaluation. Use only the initial document text provided below: the first two text pages, or the first 500 words when page boundaries are not available.
 
 File name:
 {file_name}
@@ -43,15 +44,19 @@ Return this exact JSON object:
   "extraction_notes": ""
 }}
 
-Relevant text excerpts:
-{selected_text}
+Initial text for classification:
+{classification_text}
 """
 
 
 EXTRACTION_PROMPT_TEMPLATE = """Extract metadata for category "{document_category}".
+This is the second evaluation. Follow the decision tree and category-specific prompt below.
 
 File name:
 {file_name}
+
+First evaluation result:
+{classification_json}
 
 Deterministic signals:
 {deterministic_json}
@@ -62,36 +67,62 @@ Only return these fields:
 Category-specific guardrails:
 {guardrails}
 
-Relevant text excerpts:
-{selected_text}
+Highlighted relevant excerpts:
+{highlighted_text}
 """
 
 
-GUARDRAILS = {
+CATEGORY_PROMPT_TREE = {
     "lease_contract": (
-        "Extract lessor, lessee, property, dates, rent day, monthly rent and currency only when explicit. "
+        "Large type: lease/contractual document.\n"
+        "Possibilities: lease agreement, lease amendment, renewal, termination, addendum, rent update.\n"
+        "Extract lessor, lessee, property, dates, rent day, monthly rent and currency only when explicit.\n"
         "Do not fill bank fields unless bank data is clearly part of payment instructions."
     ),
     "property_document": (
-        "Prioritize property article, section, parish, municipality, district, location/address and owner fields. "
+        "Large type: property registry/tax/property evidence.\n"
+        "Possibilities: caderneta predial, certidao predial, CRP, registo predial, matriz, averbamento.\n"
+        "Prioritize property article, section, parish, municipality, district, location/address and owner fields.\n"
         "Do not fill lessor or lessee unless a real lease relationship appears."
     ),
     "bank_details": (
-        "Extract IBAN, NIB, BIC/SWIFT, bank name, account holder and account number. "
+        "Large type: bank/account information.\n"
+        "Possibilities: IBAN certificate, account ownership declaration, bank details form, NIB/BIC/SWIFT information.\n"
+        "Extract IBAN, NIB, BIC/SWIFT, bank name, account holder and account number.\n"
         "Do not classify as payment proof unless there is a clear completed payment with date, payer, payee and amount."
     ),
     "payment_proof": (
-        "payment_amount requires monetary context such as EUR, €, amount, montante, valor, total or clear payment wording. "
+        "Large type: completed payment evidence.\n"
+        "Possibilities: bank transfer proof, payment receipt, rent payment proof, settlement confirmation.\n"
+        "payment_amount requires monetary context such as EUR, €, amount, montante, valor, total or clear payment wording.\n"
         "Do not confuse IBAN, NIB, BIC/SWIFT, account number or reference with payment_amount."
     ),
     "invoice_or_receipt": (
-        "Extract invoice/receipt date, parties, total and description. "
+        "Large type: billing or receipt document.\n"
+        "Possibilities: invoice, receipt, rent receipt, services invoice, fee note.\n"
+        "Extract invoice/receipt date, parties, total and description.\n"
         "Only use payment_proof semantics when this is clearly a bank transfer/payment proof."
     ),
-    "identity_document": "Extract identity or company identification metadata only when explicit.",
-    "tax_document": "Extract fiscal metadata, taxpayer names/IDs and amounts only when explicit.",
-    "correspondence": "Extract sender/recipient-like parties only if useful, plus concise summary.",
-    "other": "Extract only conservative metadata. Empty fields are better than guesses.",
+    "identity_document": (
+        "Large type: identity or company identification.\n"
+        "Possibilities: citizen card, passport, company certificate, commercial registry, tax ID evidence.\n"
+        "Extract identity or company identification metadata only when explicit."
+    ),
+    "tax_document": (
+        "Large type: fiscal/tax document.\n"
+        "Possibilities: tax certificate, fiscal declaration, settlement note, tax proof.\n"
+        "Extract fiscal metadata, taxpayer names/IDs and amounts only when explicit."
+    ),
+    "correspondence": (
+        "Large type: communication/correspondence.\n"
+        "Possibilities: letter, notice, email export, notification, legal communication.\n"
+        "Extract sender/recipient-like parties only if useful, plus concise summary."
+    ),
+    "other": (
+        "Large type: unknown or mixed document.\n"
+        "Possibilities: anything not safely covered by the official categories.\n"
+        "Extract only conservative metadata. Empty fields are better than guesses."
+    ),
 }
 
 
@@ -100,10 +131,11 @@ def extract_with_ollama(
     model: str,
     *,
     file_name: str,
-    selected_text: str,
+    classification_text: str,
+    highlighted_text: str,
     signals: DeterministicSignals,
 ) -> ExtractionResult:
-    if len(selected_text.strip()) < 200:
+    if len(classification_text.strip()) < 200 and len(highlighted_text.strip()) < 200:
         return ExtractionResult(
             document_category=signals.suggested_category,
             document_type="",
@@ -114,9 +146,17 @@ def extract_with_ollama(
             raw_json={"deterministic": signals.to_dict(), "llm": {}},
         )
 
-    classification = classify_with_ollama(base_url, model, file_name, selected_text, signals)
+    classification = classify_with_ollama(base_url, model, file_name, classification_text, signals)
     category = _normalize_category(classification.get("document_category", signals.suggested_category))
-    extraction = extract_metadata_with_ollama(base_url, model, file_name, selected_text, signals, category)
+    extraction = extract_metadata_with_ollama(
+        base_url,
+        model,
+        file_name,
+        highlighted_text,
+        signals,
+        category,
+        classification,
+    )
     merged = {**classification, **extraction, "document_category": category}
     llm_json = {"classification": classification, "extraction": extraction}
     return _result_from_dict(
@@ -136,7 +176,7 @@ def classify_with_ollama(
     base_url: str,
     model: str,
     file_name: str,
-    selected_text: str,
+    classification_text: str,
     signals: DeterministicSignals,
 ) -> dict[str, Any]:
     return _chat_json(
@@ -146,7 +186,7 @@ def classify_with_ollama(
             file_name=file_name,
             deterministic_json=json.dumps(signals.to_dict(), ensure_ascii=False, indent=2),
             category_list=_category_list(),
-            selected_text=selected_text,
+            classification_text=classification_text,
         ),
     )
 
@@ -155,9 +195,10 @@ def extract_metadata_with_ollama(
     base_url: str,
     model: str,
     file_name: str,
-    selected_text: str,
+    highlighted_text: str,
     signals: DeterministicSignals,
     document_category: str,
+    classification: dict[str, Any],
 ) -> dict[str, Any]:
     schema = _blank_schema(document_category)
     return _chat_json(
@@ -166,10 +207,11 @@ def extract_metadata_with_ollama(
         EXTRACTION_PROMPT_TEMPLATE.format(
             document_category=document_category,
             file_name=file_name,
+            classification_json=json.dumps(classification, ensure_ascii=False, indent=2),
             deterministic_json=json.dumps(signals.to_dict(), ensure_ascii=False, indent=2),
             schema_json=json.dumps(schema, ensure_ascii=False, indent=2),
-            guardrails=GUARDRAILS.get(document_category, GUARDRAILS["other"]),
-            selected_text=selected_text,
+            guardrails=CATEGORY_PROMPT_TREE.get(document_category, CATEGORY_PROMPT_TREE["other"]),
+            highlighted_text=highlighted_text,
         ),
     )
 

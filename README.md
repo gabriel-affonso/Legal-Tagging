@@ -6,7 +6,7 @@ Programa local para criar um register de documentos a partir de PDFs sincronizad
 
 1. O Power Automate continua a copiar os PDFs aprovados para uma pasta no SharePoint.
 2. O OneDrive/SharePoint Sync coloca essa pasta no seu PC.
-3. Este programa monitora a pasta local, copia PDFs novos para `processing/`, extrai texto/OCR, aplica regras determinísticas, seleciona trechos relevantes, chama o Ollama local para classificação/extração semântica e adiciona uma linha em `document_register.xlsx`.
+3. Este programa monitora a pasta local, copia PDFs novos para `processing/`, extrai texto/OCR, aplica regras determinísticas, faz uma primeira avaliação local do tipo de documento, seleciona/destaca trechos relevantes, faz uma segunda avaliação local com prompt específico da tipologia e adiciona uma linha em `document_register.xlsx`.
 4. Cada PDF é identificado por SHA-256, então o mesmo documento não é registrado duas vezes.
 5. A saída do LLM é validada e normalizada antes de entrar no Excel.
 6. Cada execução grava eventos em `logs/processing.log`.
@@ -17,11 +17,13 @@ O processamento é híbrido e conservador:
 
 1. Regras determinísticas por nome do arquivo e regex no texto.
 2. Extração local de IBAN, NIB, BIC/SWIFT, NIF/NIPC, datas, valores e sinais prediais.
-3. Seleção de trechos relevantes: primeiras páginas e janelas perto de termos como contrato, caderneta, artigo, IBAN, pagamento, beneficiário e ordenante.
-4. Classificação com Ollama local usando nome do arquivo, sinais determinísticos e trechos curtos.
-5. Extração com schema específico por categoria.
-6. Validação pós-LLM, normalização e regras negativas.
-7. Marcação automática de `needs_review` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes ou valores suspeitos.
+3. Primeira avaliação do Ollama local: usa apenas as duas primeiras páginas com texto ou, quando não houver marcação de páginas, as primeiras 500 palavras. O objetivo é definir a categoria ampla e o tipo/subtipo provável.
+4. Seleção de trechos relevantes: primeiras páginas e janelas perto de termos como contrato, caderneta, artigo, IBAN, pagamento, beneficiário e ordenante.
+5. Enriquecimento local do texto: datas, valores, meses e palavras-chave importantes são marcados no texto com etiquetas como `[[DATE:...]]`, `[[MONEY:...]]`, `[[MONTH:...]]` e `[[KEYWORD:...]]`.
+6. Segunda avaliação do Ollama local: usa o resultado da primeira avaliação, os sinais determinísticos e os trechos destacados. A partir da categoria ampla, entra numa árvore de prompts específica para contrato, documento predial, dados bancários, comprovativo de pagamento, fatura/recibo, documento fiscal, identidade, correspondência ou outros.
+7. Extração com schema específico por categoria.
+8. Validação pós-LLM, normalização e regras negativas.
+9. Marcação automática de `needs_review` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes ou valores suspeitos.
 
 Regras de segurança importantes:
 
@@ -153,7 +155,12 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 
 ## Categorias oficiais
 
-O Ollama trabalha em duas etapas, mas sempre condicionado pelos sinais determinísticos locais. As categorias oficiais são:
+O Ollama trabalha em duas avaliações separadas:
+
+1. Classificação inicial com começo do documento: define `document_category`, `document_type` e `document_subtype`.
+2. Extração por árvore de prompts: escolhe um prompt específico a partir da categoria ampla e só então extrai os campos do schema correto.
+
+As categorias oficiais são:
 
 - `lease_contract`: contrato de arrendamento.
 - `property_document`: caderneta predial, certidão predial, CRP, registo predial, matriz ou averbamento.
@@ -178,5 +185,5 @@ O Ollama trabalha em duas etapas, mas sempre condicionado pelos sinais determin�
 
 ```bash
 python3 -m compileall src
-PYTHONPATH=src python3 -m unittest tests/test_detectors.py
+PYTHONPATH=src python3 -m unittest tests/test_detectors.py tests/test_text_selection.py
 ```

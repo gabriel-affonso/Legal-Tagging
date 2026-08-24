@@ -47,10 +47,41 @@ KEYWORDS = [
     "beneficiario",
     "beneficiário",
     "ordenante",
+    "data",
+    "proprietario",
+    "proprietário",
+    "propriedade",
+    "imovel",
+    "imóvel",
+    "locador",
+    "locatario",
+    "locatário",
+    "inquilino",
+    "beneficiaria",
+    "beneficiária",
+    "euros",
 ]
 
 KEYWORD_RE = re.compile("|".join(re.escape(keyword) for keyword in sorted(KEYWORDS, key=len, reverse=True)), re.IGNORECASE)
 PAGE_RE = re.compile(r"(?=\[Page \d+\])")
+DATE_RE = re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\.\d{1,2}\.\d{2,4})\b")
+MONTH_RE = re.compile(
+    r"\b(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro|"
+    r"january|february|march|april|may|june|july|august|september|october|november|december)\b",
+    re.IGNORECASE,
+)
+MONEY_RE = re.compile(
+    r"(?:(?:EUR|USD|GBP)\s*)?\b\d{1,3}(?:[ .]\d{3})*(?:,\d{2}|\.\d{2})?\b\s*(?:EUR|USD|GBP|€|\$|£|euros?)",
+    re.IGNORECASE,
+)
+
+
+def select_classification_text(text: str, *, page_count: int = 2, fallback_words: int = 500) -> str:
+    cleaned = _clean_ocr_noise(text)
+    pages = [page.strip() for page in PAGE_RE.split(cleaned) if _has_text(page)] if PAGE_RE.search(cleaned) else []
+    if pages:
+        return "\n\n---\n\n".join(pages[:page_count])
+    return _first_words(cleaned, fallback_words)
 
 
 def select_relevant_text(text: str, *, max_chars: int = 12000, context_lines: int = 3) -> str:
@@ -68,8 +99,34 @@ def select_relevant_text(text: str, *, max_chars: int = 12000, context_lines: in
     return selected[:max_chars]
 
 
+def select_highlighted_relevant_text(text: str, *, max_chars: int = 12000, context_lines: int = 3) -> str:
+    selected = select_relevant_text(text, max_chars=max_chars, context_lines=context_lines)
+    return highlight_important_text(selected)
+
+
+def highlight_important_text(text: str) -> str:
+    placeholders: dict[str, str] = {}
+
+    def protect(pattern: re.Pattern[str], label: str, value: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            key = f"@@HL{len(placeholders)}@@"
+            placeholders[key] = f"[[{label}:{match.group(0)}]]"
+            return key
+
+        return pattern.sub(replace, value)
+
+    highlighted = protect(DATE_RE, "DATE", text)
+    highlighted = protect(MONEY_RE, "MONEY", highlighted)
+    highlighted = protect(MONTH_RE, "MONTH", highlighted)
+    highlighted = protect(KEYWORD_RE, "KEYWORD", highlighted)
+
+    for key, value in placeholders.items():
+        highlighted = highlighted.replace(key, value)
+    return highlighted
+
+
 def _first_pages(text: str, page_count: int) -> list[str]:
-    pages = [page.strip() for page in PAGE_RE.split(text) if page.strip()]
+    pages = [page.strip() for page in PAGE_RE.split(text) if _has_text(page)]
     if not pages:
         return [text[:4000]]
     return pages[:page_count]
@@ -122,3 +179,11 @@ def _dedupe_sections(sections: list[str]) -> str:
         result.append(cleaned)
     return "\n\n---\n\n".join(result)
 
+
+def _first_words(text: str, max_words: int) -> str:
+    words = text.split()
+    return " ".join(words[:max_words])
+
+
+def _has_text(value: str) -> bool:
+    return sum(ch.isalnum() for ch in value) >= 20
