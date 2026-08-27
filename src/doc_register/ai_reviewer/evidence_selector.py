@@ -42,17 +42,21 @@ def select_evidence(text: str, fields: list[str], *, max_chars: int = 6500) -> s
     if len(clean_text) <= max_chars:
         return _label("FULL DOCUMENT TEXT", clean_text)
 
-    front_budget = max(800, int(max_chars * 0.25))
-    end_budget = max(1000, int(max_chars * 0.30))
-    line_budget = max_chars - front_budget - end_budget
-
     keywords = _keywords_for(fields)
-    relevant_lines = _select_keyword_lines(clean_text, keywords, max_chars=line_budget)
-    chunks = [
-        ("DOCUMENT BEGINNING", clean_text[:front_budget]),
-        ("FIELD-RELEVANT LINES", relevant_lines),
-        ("DOCUMENT END", clean_text[-end_budget:]),
-    ]
+    focused = _select_keyword_windows(
+        clean_text,
+        keywords,
+        max_chars=max_chars,
+        radius=300,
+    )
+    chunks = [("FIELD-FOCUSED 300-CHAR WINDOWS", focused)]
+    if not focused:
+        front_budget = max(800, int(max_chars * 0.25))
+        end_budget = max(1000, int(max_chars * 0.30))
+        chunks = [
+            ("DOCUMENT BEGINNING", clean_text[:front_budget]),
+            ("DOCUMENT END", clean_text[-end_budget:]),
+        ]
     return _join_distinct(chunks, max_chars=max_chars)
 
 
@@ -66,23 +70,52 @@ def _keywords_for(fields: list[str]) -> tuple[str, ...]:
     return tuple(selected)
 
 
-def _select_keyword_lines(text: str, keywords: tuple[str, ...], *, max_chars: int) -> str:
+def _select_keyword_windows(
+    text: str,
+    keywords: tuple[str, ...],
+    *,
+    max_chars: int,
+    radius: int,
+) -> str:
     if not keywords or max_chars <= 0:
         return ""
-    lines = text.splitlines()
+    lowered = text.lower()
+    windows: list[tuple[int, int, str]] = []
+    for keyword in keywords:
+        start = 0
+        while True:
+            index = lowered.find(keyword, start)
+            if index < 0:
+                break
+            window_start = max(0, index - radius)
+            window_end = min(len(text), index + len(keyword) + radius)
+            windows.append((window_start, window_end, keyword))
+            start = index + max(1, len(keyword))
+    if not windows:
+        return ""
+
+    merged: list[tuple[int, int, list[str]]] = []
+    for start, end, keyword in sorted(windows, key=lambda item: item[0]):
+        if not merged or start > merged[-1][1] + 60:
+            merged.append((start, end, [keyword]))
+            continue
+        previous_start, previous_end, previous_keywords = merged[-1]
+        if keyword not in previous_keywords:
+            previous_keywords.append(keyword)
+        merged[-1] = (previous_start, max(previous_end, end), previous_keywords)
+
     selected: list[str] = []
     used = 0
-    for index, line in enumerate(lines):
-        lowered = line.lower()
-        if not any(keyword in lowered for keyword in keywords):
-            continue
-        window = "\n".join(lines[max(0, index - 1): index + 2]).strip()
+    for start, end, matched_keywords in merged:
+        window = text[start:end].strip()
         if not window:
             continue
-        if used + len(window) + 2 > max_chars:
+        label = f"[window around: {', '.join(matched_keywords[:4])}]"
+        rendered = f"{label}\n{window}"
+        if used + len(rendered) + 5 > max_chars:
             break
-        selected.append(window)
-        used += len(window) + 2
+        selected.append(rendered)
+        used += len(rendered) + 5
     return "\n---\n".join(selected)
 
 

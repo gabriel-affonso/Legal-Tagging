@@ -6,6 +6,7 @@ from typing import Any, Iterable
 from ..models import ExtractionResult
 from .critical_recovery import recover_critical_fields
 from .field_recovery import recover_labelled_fields
+from .fuzzy_recovery import recover_fuzzy_fields
 from .iban_recovery import recover_iban_fields
 from .ocr_quality import apply_ocr_quality
 from .quality_score import calculate_score
@@ -55,6 +56,11 @@ def validate_result(
     if document_text:
         result = apply_ocr_quality(result, document_text=document_text)
     if document_text and recover:
+        result, _fuzzy_report = recover_fuzzy_fields(
+            result,
+            file_name=file_name,
+            document_text=document_text,
+        )
         result, _iban_report = recover_iban_fields(
             result,
             document_text=document_text,

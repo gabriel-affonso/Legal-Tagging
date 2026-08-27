@@ -9,7 +9,11 @@ from urllib import error, request
 
 from ..contract_types import canonical_contract_type, detect_contract_type
 from ..models import ExtractionResult
+from .contract_structure import party_candidates_from_zones, zone_text_for_role
 from .name_quality import validate_name_field
+from .property_recovery import recover_property_group
+from .signature_date import normalize_date as normalize_signature_date
+from .signature_date import recover_signature_date
 
 GENERIC_PARTIES = {
     "SENHORIO", "SENHORIOS", "ARRENDATARIO", "ARRENDATARIA",
@@ -48,6 +52,11 @@ SECTION_PATTERNS = (
         r"sec(?:cao|ção|c[.ªa])\s*[:#-]?\s*([A-Z]{1,3})\b",
         re.IGNORECASE,
     ),
+)
+
+PROPERTY_CONTEXT_RE = re.compile(
+    r"\b(?:matriz|matricial|pr[eé]dio|predial|inscrito|caderneta|r[uú]stic[ao]|urban[ao])\b",
+    re.IGNORECASE,
 )
 
 MONEY_PATTERNS = (
@@ -127,6 +136,7 @@ def recover_critical_fields(
         return result, report
 
     _recover_known_lessee(result, document_text, report)
+    _recover_parties_from_contract_structure(result, document_text, report)
     _recover_lessor_from_filename_and_text(
         result, file_name, document_text, report
     )
@@ -250,18 +260,29 @@ def _recover_lessor_from_filename_and_text(
         raw_candidate = re.sub(r"\s+", " ", raw_candidate).strip(" ,;:_-")
 
         candidate_names = _split_party_names(raw_candidate)
+        lessor_zone_text = zone_text_for_role(text, "lessor")
+        confirmation_text = lessor_zone_text or text
         supported_names = [
             candidate
             for candidate in candidate_names
-            if _candidate_supported_by_text(candidate, text)
+            if _candidate_supported_by_text(candidate, confirmation_text)
         ]
         if supported_names:
             joined = "; ".join(supported_names)
             _set_recovered(
                 result, report, "lessor", joined,
-                "filename_candidate_confirmed_in_text", "high", joined,
+                (
+                    "filename_candidate_confirmed_in_lessor_zone"
+                    if lessor_zone_text
+                    else "filename_candidate_confirmed_in_text"
+                ),
+                "high",
+                lessor_zone_text[:220] if lessor_zone_text else joined,
             )
             return
+
+    if zone_text_for_role(text, "lessor"):
+        return
 
     for pattern in PERSON_LINE_PATTERNS:
         match = pattern.search(text)
@@ -274,6 +295,45 @@ def _recover_lessor_from_filename_and_text(
                 "labelled_text_pattern", "medium", match.group(0)[:180],
             )
             return
+
+
+def _recover_parties_from_contract_structure(
+    result: ExtractionResult,
+    text: str,
+    report: RecoveryReport,
+) -> None:
+    if "lessor" in _recovery_targets(result):
+        _recover_party_from_zones(result, text, report, "lessor")
+    if "lessee" in _recovery_targets(result):
+        _recover_party_from_zones(result, text, report, "lessee")
+
+
+def _recover_party_from_zones(
+    result: ExtractionResult,
+    text: str,
+    report: RecoveryReport,
+    field_name: str,
+) -> None:
+    candidates = party_candidates_from_zones(text, field_name)
+    if not candidates:
+        return
+    values: list[str] = []
+    evidences: list[str] = []
+    for candidate, evidence in candidates:
+        if candidate not in values:
+            values.append(candidate)
+            evidences.append(evidence)
+    if not values:
+        return
+    _set_recovered(
+        result,
+        report,
+        field_name,
+        "; ".join(values[:4]),
+        f"contract_structure_{field_name}_zone",
+        "high" if len(values) <= 2 else "medium",
+        "\n".join(evidences)[:300],
+    )
 
 
 def _split_party_names(value: str) -> list[str]:
@@ -331,20 +391,41 @@ def _recover_structured_fields(
     report: RecoveryReport,
 ) -> None:
     if "signed_date" in _recovery_targets(result):
-        for pattern in DATE_PATTERNS:
-            match = pattern.search(text)
-            if match:
-                _set_recovered(
-                    result, report, "signed_date",
-                    _normalize_date(match.group(1)), "signed_date_pattern",
-                    "medium", match.group(0)[:180],
-                )
-                break
+        candidate = recover_signature_date(text)
+        if candidate:
+            _set_recovered(
+                result, report, "signed_date", candidate.value,
+                candidate.method, candidate.confidence, candidate.evidence,
+            )
+        if "signed_date" in _recovery_targets(result):
+            for pattern in DATE_PATTERNS:
+                match = pattern.search(text)
+                if match:
+                    _set_recovered(
+                        result, report, "signed_date",
+                        _normalize_date(match.group(1)), "signed_date_pattern",
+                        "medium", match.group(0)[:180],
+                    )
+                    break
+
+    property_group = recover_property_group(text)
+    if "property_article" in _recovery_targets(result) and property_group.article:
+        _set_recovered(
+            result, report, "property_article", property_group.article,
+            "property_group_context", "high", property_group.evidence,
+        )
+    if "property_section" in _recovery_targets(result) and property_group.section:
+        _set_recovered(
+            result, report, "property_section", property_group.section,
+            "property_group_context", "high", property_group.evidence,
+        )
 
     if "property_article" in _recovery_targets(result):
         for pattern in ARTICLE_PATTERNS:
             match = pattern.search(text)
             if match:
+                if not _match_has_context(text, match, PROPERTY_CONTEXT_RE):
+                    continue
                 _set_recovered(
                     result, report, "property_article", match.group(1),
                     "property_article_pattern", "medium", match.group(0)[:180],
@@ -355,6 +436,8 @@ def _recover_structured_fields(
         for pattern in SECTION_PATTERNS:
             match = pattern.search(text)
             if match:
+                if not _match_has_context(text, match, PROPERTY_CONTEXT_RE):
+                    continue
                 _set_recovered(
                     result, report, "property_section", match.group(1).upper(),
                     "property_section_pattern", "medium", match.group(0)[:180],
@@ -500,19 +583,32 @@ def _attach_report(result: ExtractionResult, report: RecoveryReport) -> None:
 def _focused_excerpt(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
-    front = text[: max_chars // 2]
-    end = text[-max_chars // 3 :]
     keywords = (
         "senhorio", "arrendat", "outorgante", "renda", "artigo",
         "secção", "seccao", "assinado",
     )
-    lines = [
-        line for line in text.splitlines()
-        if any(keyword in line.lower() for keyword in keywords)
-    ]
-    middle_budget = max_chars - len(front) - len(end)
-    middle = "\n".join(lines)[: max(0, middle_budget)]
-    return front + "\n[RELEVANT LINES]\n" + middle + "\n[DOCUMENT END]\n" + end
+    lowered = text.lower()
+    windows: list[str] = []
+    used = 0
+    for keyword in keywords:
+        start = 0
+        while True:
+            index = lowered.find(keyword, start)
+            if index < 0:
+                break
+            window = text[max(0, index - 300): min(len(text), index + len(keyword) + 300)].strip()
+            rendered = f"[window around: {keyword}]\n{window}"
+            if rendered not in windows and used + len(rendered) + 5 <= max_chars:
+                windows.append(rendered)
+                used += len(rendered) + 5
+            start = index + max(1, len(keyword))
+            if used >= max_chars:
+                break
+        if used >= max_chars:
+            break
+    if windows:
+        return "\n---\n".join(windows)
+    return text[:max_chars]
 
 
 def _clean_party_candidate(value: str) -> str:
@@ -537,18 +633,14 @@ def _normalize(value: str) -> str:
     return " ".join(plain.upper().split())
 
 
+def _match_has_context(text: str, match: re.Match[str], pattern: re.Pattern[str]) -> bool:
+    start = max(0, match.start() - 120)
+    end = min(len(text), match.end() + 120)
+    return bool(pattern.search(text[start:end]))
+
+
 def _normalize_date(value: str) -> str:
-    value = value.strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-        return value
-    match = re.fullmatch(
-        r"(\d{1,2})[/-](\d{1,2})[/-]((?:19|20)\d{2})",
-        value,
-    )
-    if match:
-        day, month, year = map(int, match.groups())
-        return f"{year:04d}-{month:02d}-{day:02d}"
-    return value
+    return normalize_signature_date(value) or value.strip()
 
 
 __all__ = [

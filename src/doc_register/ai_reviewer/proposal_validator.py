@@ -140,6 +140,8 @@ def _validate_property_article(
         return "invalid_property_article_format"
     if not _context_has(proposal.evidence, ("ARTIGO", "MATRIZ", "INSCRITO", "PREDIAL")):
         return "property_article_context_missing"
+    if not _context_has(proposal.evidence, ("MATRIZ", "INSCRITO", "PREDIO", "PRÉDIO", "PREDIAL", "CADERNETA", "RUSTICO", "RÚSTICO", "URBANO")):
+        return "property_block_context_missing"
     if value not in compact_alphanumeric(document_text):
         return "property_article_not_found_in_document"
     checks.append("property_article_found_in_document")
@@ -157,6 +159,8 @@ def _validate_property_section(
         return "invalid_property_section_format"
     if not _context_has(proposal.evidence, ("SECCAO", "SEÇÃO", "SECAO", "SECÇÃO", "SEC")):
         return "property_section_context_missing"
+    if not _context_has(proposal.evidence, ("MATRIZ", "INSCRITO", "PREDIO", "PRÉDIO", "PREDIAL", "CADERNETA", "RUSTICO", "RÚSTICO", "URBANO")):
+        return "property_block_context_missing"
     if value not in compact_alphanumeric(document_text):
         return "property_section_not_found_in_document"
     checks.append("property_section_found_in_document")

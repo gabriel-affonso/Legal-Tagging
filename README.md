@@ -25,9 +25,10 @@ O processamento é híbrido e conservador:
 8. Sprint 1B: recuperação determinística de campos críticos quando houver evidência direta no texto.
 9. Sprint 1A: validação determinística, `quality_score`, prioridade e estado de validação.
 10. Step 2.2: robustez pré/pós-IA com recuperação determinística de IBAN, labels claros de proprietário/titular, validação de qualidade de nomes e score de OCR.
-11. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com evidência curta e propostas validadas antes de alterar o registo.
-12. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-13. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+11. Step 2.3: recuperação focada para contratos de arrendamento, usando zonas contratuais, hierarquia de data assinada, bloco predial agrupado e correção OCR fuzzy conservadora.
+12. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
+13. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+14. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -205,6 +206,17 @@ O Step 2.2 reduz falsos positivos antes da IA e melhora a fila de revisão:
 - `ocr_quality_score` e `ocr_quality_flags` permitem ver rapidamente quando a causa da revisão é degradação OCR, e `ocr_quality_low` bloqueia autoaprovação.
 - regras de consistência detectam conflito entre `monthly_rent` e `purchase_price`/`option_price`/`assignment_price`, além de divergência entre artigo/secção extraídos e sinais determinísticos fortes.
 
+## Step 2.3 Precisão em Contratos
+
+O Step 2.3 foca os campos que mais impactam a leitura dos contratos de arrendamento: `signed_date`, `lessor`, `owner_name`, `property_article` e `property_section`.
+
+- partes contratuais são recuperadas primeiro a partir de zonas como `Primeiro Outorgante`, `Segundo Outorgante`, `Senhorio`, `Arrendatário`, `De um lado` e `Do outro lado`.
+- candidatos vindos do nome do arquivo continuam úteis, mas quando uma zona de senhorio existe eles precisam ser confirmados nessa zona, não em qualquer ponto do documento.
+- `signed_date` segue hierarquia explícita: data de assinatura primeiro, data de celebração/outorga depois, e ignora datas de validade, registo, emissão, licença, matriz ou caderneta.
+- `property_article` e `property_section` são recuperados em bloco: artigo/secção só entram quando aparecem perto de contexto predial como `matriz`, `prédio`, `inscrito`, `predial` ou `caderneta`.
+- a revisão por IA recebe janelas focadas de 300 caracteres antes/depois dos termos relevantes, em vez de blocos longos de contrato inteiro.
+- a correção fuzzy OCR é conservadora e auditável em `raw_json["fuzzy_recovery"]`, corrigindo localidades conhecidas e nomes muito próximos quando há evidência local suficiente.
+
 ## Tipologias Contratuais
 
 Os instrumentos contratuais usam `document_category=lease_contract` por compatibilidade com o schema existente, mas `document_subtype` e `contract_type` são normalizados para códigos canónicos:
@@ -246,8 +258,8 @@ As categorias oficiais são:
 ## Validações locais
 
 ```bash
-python3 -m py_compile src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/validators/name_quality.py src/doc_register/validators/iban_recovery.py src/doc_register/validators/field_recovery.py src/doc_register/validators/ocr_quality.py src/doc_register/ai_reviewer/*.py
-PYTHONPATH=src python3 -m unittest tests/test_step2_2.py tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
+python3 -m py_compile src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/validators/name_quality.py src/doc_register/validators/iban_recovery.py src/doc_register/validators/field_recovery.py src/doc_register/validators/fuzzy_recovery.py src/doc_register/validators/contract_structure.py src/doc_register/validators/property_recovery.py src/doc_register/validators/signature_date.py src/doc_register/validators/ocr_quality.py src/doc_register/ai_reviewer/*.py
+PYTHONPATH=src python3 -m unittest tests/test_step2_3.py tests/test_step2_2.py tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
 ```
 
 Smoke test opcional com Ollama local:
