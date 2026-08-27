@@ -16,6 +16,7 @@ from .pdf_text import extract_text_with_optional_ocr
 from .registry import ExcelRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .ai_reviewer import review_if_needed
+from .validators.contract_clause_integration import apply_contract_clause_segmentation
 from .validators.integration import recover_validate_result
 from .validators.validator import validate_result
 
@@ -212,6 +213,12 @@ class DocumentProcessor:
             document_text[:3000],
             signals.contract_type,
             signals.contract_type_label,
+        )
+        result = apply_contract_clause_segmentation(
+            result,
+            document_text=document_text,
+            enabled=self.config.contract_clause_segmentation_enabled,
+            max_clause_text_chars=self.config.contract_clause_segmentation_max_clause_chars,
         )
 
         result = recover_validate_result(

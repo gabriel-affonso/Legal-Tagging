@@ -26,9 +26,10 @@ O processamento é híbrido e conservador:
 9. Sprint 1A: validação determinística, `quality_score`, prioridade e estado de validação.
 10. Step 2.2: robustez pré/pós-IA com recuperação determinística de IBAN, labels claros de proprietário/titular, validação de qualidade de nomes e score de OCR.
 11. Step 2.3: recuperação focada para contratos de arrendamento, usando zonas contratuais, hierarquia de data assinada, bloco predial agrupado e correção OCR fuzzy conservadora.
-12. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
-13. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-14. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+12. Step 2.4: segmentação local de cláusulas contratuais em blocos auditáveis como partes, imóvel, prazo, renda, pagamento e assinaturas; estes blocos podem recuperar campos ausentes antes da validação final.
+13. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
+14. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+15. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -87,6 +88,8 @@ Edite `config.json` e ajuste principalmente:
 - `ai_review_enabled`: ativa o Step 2 AI Reviewer após a validação inicial.
 - `ai_review_timeout_seconds`: tempo máximo da chamada focada ao Ollama no Step 2.
 - `ai_review_max_evidence_chars`: limite de caracteres de evidência enviados ao Step 2.
+- `contract_clause_segmentation_enabled`: ativa o Step 2.4 para contratos.
+- `contract_clause_segmentation_max_clause_chars`: limite por cláusula guardada em `raw_json["contract_clause_segmentation"]`.
 
 ## Usar uma vez
 
@@ -217,6 +220,14 @@ O Step 2.3 foca os campos que mais impactam a leitura dos contratos de arrendame
 - a revisão por IA recebe janelas focadas de 300 caracteres antes/depois dos termos relevantes, em vez de blocos longos de contrato inteiro.
 - a correção fuzzy OCR é conservadora e auditável em `raw_json["fuzzy_recovery"]`, corrigindo localidades conhecidas e nomes muito próximos quando há evidência local suficiente.
 
+## Step 2.4 Segmentação de Cláusulas
+
+O Step 2.4 adiciona uma camada local e auditável para contratos. O arquivo principal é `src/doc_register/validators/contract_clause_segmentation.py`: a função `segment_contract_clauses(document_text)` devolve uma lista de cláusulas tipificadas e pode ser substituída por um modelo local mantendo a mesma interface.
+
+A integração fica em `src/doc_register/validators/contract_clause_integration.py`. Ela usa as cláusulas para recuperar, de forma conservadora, `lessor`, `lessee`, `property_article`, `property_section`, `signed_date`, `contract_start_date`, `contract_end_date`, `monthly_rent` e `rent_payment_day` apenas quando os campos estão ausentes, genéricos ou inválidos. O resultado completo é guardado em `raw_json["contract_clause_segmentation"]`, incluindo `clause_type`, página, confiança, padrão usado, excerto e lista de campos recuperados.
+
+Os tipos de cláusula atuais são: `title`, `parties`, `property`, `term`, `rent`, `payment`, `deposit`, `expenses`, `obligations`, `communications`, `signatures`, `annexes` e `other`.
+
 ## Tipologias Contratuais
 
 Os instrumentos contratuais usam `document_category=lease_contract` por compatibilidade com o schema existente, mas `document_subtype` e `contract_type` são normalizados para códigos canónicos:
@@ -258,8 +269,8 @@ As categorias oficiais são:
 ## Validações locais
 
 ```bash
-python3 -m py_compile src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/validators/name_quality.py src/doc_register/validators/iban_recovery.py src/doc_register/validators/field_recovery.py src/doc_register/validators/fuzzy_recovery.py src/doc_register/validators/contract_structure.py src/doc_register/validators/property_recovery.py src/doc_register/validators/signature_date.py src/doc_register/validators/ocr_quality.py src/doc_register/ai_reviewer/*.py
-PYTHONPATH=src python3 -m unittest tests/test_step2_3.py tests/test_step2_2.py tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
+python3 -m py_compile src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/validators/name_quality.py src/doc_register/validators/iban_recovery.py src/doc_register/validators/field_recovery.py src/doc_register/validators/fuzzy_recovery.py src/doc_register/validators/contract_structure.py src/doc_register/validators/contract_clause_segmentation.py src/doc_register/validators/contract_clause_integration.py src/doc_register/validators/property_recovery.py src/doc_register/validators/signature_date.py src/doc_register/validators/ocr_quality.py src/doc_register/ai_reviewer/*.py
+PYTHONPATH=src python3 -m unittest tests/test_step2_4.py tests/test_step2_3.py tests/test_step2_2.py tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
 ```
 
 Smoke test opcional com Ollama local:

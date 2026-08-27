@@ -33,6 +33,8 @@ class AppConfig:
     ai_review_max_evidence_chars: int = 6500
     ai_review_auto_accept_confidence: float = 0.90
     ai_review_human_confidence: float = 0.70
+    contract_clause_segmentation_enabled: bool = True
+    contract_clause_segmentation_max_clause_chars: int = 1200
 
     @classmethod
     def from_json(cls, path: Path) -> "AppConfig":
@@ -75,6 +77,12 @@ class AppConfig:
             ai_review_max_evidence_chars=int(raw.get("ai_review_max_evidence_chars", 6500)),
             ai_review_auto_accept_confidence=float(raw.get("ai_review_auto_accept_confidence", 0.90)),
             ai_review_human_confidence=float(raw.get("ai_review_human_confidence", 0.70)),
+            contract_clause_segmentation_enabled=_as_bool(
+                raw.get("contract_clause_segmentation_enabled", True)
+            ),
+            contract_clause_segmentation_max_clause_chars=int(
+                raw.get("contract_clause_segmentation_max_clause_chars", 1200)
+            ),
         )
 
     def ensure_directories(self) -> None:
