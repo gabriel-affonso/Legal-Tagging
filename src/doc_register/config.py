@@ -25,6 +25,8 @@ class AppConfig:
     ocr_min_text_chars: int
     ocr_timeout_seconds: int
     ocr_dir: Path
+    pdf_layout_extraction_enabled: bool
+    pdf_layout_min_quality_score: int
     max_pdf_pages: int
     max_text_chars: int
     copy_only_recent_minutes: int
@@ -69,6 +71,10 @@ class AppConfig:
             ocr_min_text_chars=int(raw.get("ocr_min_text_chars", 600)),
             ocr_timeout_seconds=int(raw.get("ocr_timeout_seconds", 600)),
             ocr_dir=as_path("ocr_dir", "ocr"),
+            pdf_layout_extraction_enabled=_as_bool(
+                raw.get("pdf_layout_extraction_enabled", True)
+            ),
+            pdf_layout_min_quality_score=int(raw.get("pdf_layout_min_quality_score", 35)),
             max_pdf_pages=int(raw.get("max_pdf_pages", 12)),
             max_text_chars=int(raw.get("max_text_chars", 24000)),
             copy_only_recent_minutes=int(raw.get("copy_only_recent_minutes", 0)),

@@ -134,6 +134,8 @@ class DocumentProcessor:
             ocr_dir=self.config.ocr_dir,
             ocr_language=self.config.ocr_language,
             ocr_timeout_seconds=self.config.ocr_timeout_seconds,
+            layout_extraction_enabled=self.config.pdf_layout_extraction_enabled,
+            layout_min_quality_score=self.config.pdf_layout_min_quality_score,
         )
 
         if extracted_text.notes:

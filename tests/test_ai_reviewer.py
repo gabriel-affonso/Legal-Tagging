@@ -37,6 +37,8 @@ def _config() -> AppConfig:
         ocr_min_text_chars=600,
         ocr_timeout_seconds=1,
         ocr_dir=Path("."),
+        pdf_layout_extraction_enabled=True,
+        pdf_layout_min_quality_score=35,
         max_pdf_pages=12,
         max_text_chars=24000,
         copy_only_recent_minutes=0,

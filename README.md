@@ -27,9 +27,10 @@ O processamento é híbrido e conservador:
 10. Step 2.2: robustez pré/pós-IA com recuperação determinística de IBAN, labels claros de proprietário/titular, validação de qualidade de nomes e score de OCR.
 11. Step 2.3: recuperação focada para contratos de arrendamento, usando zonas contratuais, hierarquia de data assinada, bloco predial agrupado e correção OCR fuzzy conservadora.
 12. Step 2.4: segmentação local de cláusulas contratuais em blocos auditáveis como partes, imóvel, prazo, renda, pagamento e assinaturas; estes blocos podem recuperar campos ausentes antes da validação final.
-13. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
-14. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-15. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+13. Step 2.5: extração complementar ao OCR com preservação de layout, escolha por score entre texto nativo simples, texto nativo estruturado e OCR, e fallback conservador quando uma fonte não melhora a qualidade.
+14. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
+15. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+16. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -85,6 +86,8 @@ Edite `config.json` e ajuste principalmente:
 - `ocr_enabled`: ativa OCR quando o PDF não tiver texto legível suficiente.
 - `ocr_language`: use `por+eng` para documentos em português e inglês.
 - `ocr_min_text_chars`: mínimo de caracteres extraídos antes de considerar que OCR é necessário.
+- `pdf_layout_extraction_enabled`: ativa a extração layout-aware do Step 2.5 quando PyMuPDF estiver disponível.
+- `pdf_layout_min_quality_score`: score mínimo para aceitar texto nativo/layout sem recorrer ao OCR.
 - `ai_review_enabled`: ativa o Step 2 AI Reviewer após a validação inicial.
 - `ai_review_timeout_seconds`: tempo máximo da chamada focada ao Ollama no Step 2.
 - `ai_review_max_evidence_chars`: limite de caracteres de evidência enviados ao Step 2.
@@ -228,6 +231,14 @@ A integração fica em `src/doc_register/validators/contract_clause_integration.
 
 Os tipos de cláusula atuais são: `title`, `parties`, `property`, `term`, `rent`, `payment`, `deposit`, `expenses`, `obligations`, `communications`, `signatures`, `annexes` e `other`.
 
+## Step 2.5 Extração Complementar ao OCR
+
+O Step 2.5 melhora a entrada textual antes da classificação e extração. O arquivo principal é `src/doc_register/pdf_text.py`. A função `extract_text_with_optional_ocr(...)` agora compara candidatos locais: texto nativo simples via `pypdf`, texto nativo com quebras de linha preservadas, texto layout-aware via PyMuPDF e texto OCR reutilizado/gerado quando disponível.
+
+Cada candidato recebe um score de qualidade com base em volume útil, linhas, páginas, sinais documentais e ruído. O OCR deixa de ganhar apenas por ter mais caracteres; ele precisa melhorar a qualidade do texto ou resolver ausência de texto nativo. Quando o texto layout-aware já tem qualidade suficiente, o OCR é evitado.
+
+As fontes possíveis em `text_source` incluem `native_pdf_text`, `native_pdf_pypdf_layout_text`, `native_pdf_layout_text`, `cached_ocr_pdf_text`, `cached_ocr_pdf_pypdf_layout_text` e `cached_ocr_pdf_layout_text`.
+
 ## Tipologias Contratuais
 
 Os instrumentos contratuais usam `document_category=lease_contract` por compatibilidade com o schema existente, mas `document_subtype` e `contract_type` são normalizados para códigos canónicos:
@@ -269,8 +280,8 @@ As categorias oficiais são:
 ## Validações locais
 
 ```bash
-python3 -m py_compile src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/validators/name_quality.py src/doc_register/validators/iban_recovery.py src/doc_register/validators/field_recovery.py src/doc_register/validators/fuzzy_recovery.py src/doc_register/validators/contract_structure.py src/doc_register/validators/contract_clause_segmentation.py src/doc_register/validators/contract_clause_integration.py src/doc_register/validators/property_recovery.py src/doc_register/validators/signature_date.py src/doc_register/validators/ocr_quality.py src/doc_register/ai_reviewer/*.py
-PYTHONPATH=src python3 -m unittest tests/test_step2_4.py tests/test_step2_3.py tests/test_step2_2.py tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
+python3 -m py_compile src/doc_register/pdf_text.py src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/validators/name_quality.py src/doc_register/validators/iban_recovery.py src/doc_register/validators/field_recovery.py src/doc_register/validators/fuzzy_recovery.py src/doc_register/validators/contract_structure.py src/doc_register/validators/contract_clause_segmentation.py src/doc_register/validators/contract_clause_integration.py src/doc_register/validators/property_recovery.py src/doc_register/validators/signature_date.py src/doc_register/validators/ocr_quality.py src/doc_register/ai_reviewer/*.py
+PYTHONPATH=src python3 -m unittest tests/test_step2_5.py tests/test_step2_4.py tests/test_step2_3.py tests/test_step2_2.py tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
 ```
 
 Smoke test opcional com Ollama local:
