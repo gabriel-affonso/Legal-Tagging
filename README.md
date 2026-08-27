@@ -6,7 +6,7 @@ Programa local para criar um register de documentos a partir de PDFs sincronizad
 
 1. O Power Automate continua a copiar os PDFs aprovados para uma pasta no SharePoint.
 2. O OneDrive/SharePoint Sync coloca essa pasta no seu PC.
-3. Este programa monitora a pasta local, copia PDFs novos para `processing/`, extrai texto/OCR, aplica regras determinísticas, faz uma primeira avaliação local do tipo de documento, seleciona/destaca trechos relevantes, faz uma segunda avaliação local com prompt específico da tipologia e adiciona uma linha em `document_register.xlsx`.
+3. Este programa monitora a pasta local, copia PDFs novos para `processing/`, extrai texto/OCR, aplica regras determinísticas, faz uma primeira avaliação local do tipo de documento, seleciona/destaca trechos relevantes, faz uma segunda avaliação local com prompt específico da tipologia, executa validação/recuperação determinística, chama o Step 2 AI Reviewer quando houver issues elegíveis e adiciona uma linha em `document_register.xlsx`.
 4. Cada PDF é identificado por SHA-256, então o mesmo documento não é registrado duas vezes.
 5. A saída do LLM é validada e normalizada antes de entrar no Excel.
 6. Cada execução grava eventos em `logs/processing.log`.
@@ -22,8 +22,11 @@ O processamento é híbrido e conservador:
 5. Enriquecimento local do texto: datas, valores, meses e palavras-chave importantes são marcados no texto com etiquetas como `[[DATE:...]]`, `[[MONEY:...]]`, `[[MONTH:...]]` e `[[KEYWORD:...]]`.
 6. Segunda avaliação do Ollama local: usa o resultado da primeira avaliação, os sinais determinísticos e os trechos destacados. A partir da categoria ampla, entra numa árvore de prompts específica para contrato, documento predial, dados bancários, comprovativo de pagamento, fatura/recibo, documento fiscal, identidade, correspondência ou outros.
 7. Extração com schema específico por categoria.
-8. Validação pós-LLM, normalização e regras negativas.
-9. Marcação automática de `needs_review` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes ou valores suspeitos.
+8. Sprint 1B: recuperação determinística de campos críticos quando houver evidência direta no texto.
+9. Sprint 1A: validação determinística, `quality_score`, prioridade e estado de validação.
+10. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com evidência curta e propostas validadas antes de alterar o registo.
+11. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+12. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -79,6 +82,9 @@ Edite `config.json` e ajuste principalmente:
 - `ocr_enabled`: ativa OCR quando o PDF não tiver texto legível suficiente.
 - `ocr_language`: use `por+eng` para documentos em português e inglês.
 - `ocr_min_text_chars`: mínimo de caracteres extraídos antes de considerar que OCR é necessário.
+- `ai_review_enabled`: ativa o Step 2 AI Reviewer após a validação inicial.
+- `ai_review_timeout_seconds`: tempo máximo da chamada focada ao Ollama no Step 2.
+- `ai_review_max_evidence_chars`: limite de caracteres de evidência enviados ao Step 2.
 
 ## Usar uma vez
 
@@ -157,9 +163,30 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `text_source`
 - `native_text_chars`
 - `ocr_text_chars`
+- `ai_review_status`
+- `ai_reviewed_fields`
+- `ai_accepted_fields`
+- `ai_rejected_fields`
+- `ai_review_confidence`
+- `ai_review_model`
+- `ai_review_duration_seconds`
+- `ai_review_reason`
+- `human_review_required`
 - `deterministic_json`
 - `llm_json`
 - `raw_json`
+
+## Step 2 AI Reviewer
+
+O Step 2 não reprocessa documentos já `AUTO_APPROVED` e não substitui o validator. Ele só atua quando a validação inicial deixa issues que a IA pode resolver consultando o texto do próprio documento, como `missing_lessor`, `generic_lessee`, `missing_signed_date`, `missing_property_article`, `missing_property_section` ou `missing_monthly_rent`.
+
+Cada proposta inclui campo, valor, evidência e confiança. O sistema só aplica automaticamente propostas com confiança suficiente e validação local positiva: nomes precisam estar no texto e não podem ser genéricos; datas precisam ter contexto de assinatura; artigo/secção precisam aparecer perto de termos prediais; renda mensal precisa ter periodicidade mensal explícita. Propostas de confiança intermediária ficam marcadas para revisão humana.
+
+O relatório completo é gravado em `raw_json["ai_review"]`, e as colunas `ai_review_*` permitem medir no Excel/Power BI o que foi resolvido sem IA, resolvido pelo Step 2, rejeitado pelo validator ou encaminhado para validação humana.
+
+A validação final depois do Step 2 é executada em modo puro, sem nova recuperação determinística. Isso evita que a etapa final altere campos novamente e garante que issues antigas, como `generic_lessor`, desapareçam quando já não forem produzidas pelas regras atuais.
+
+Estados técnicos são separados de revisão semântica: `NEEDS_OCR` indica ausência de texto utilizável, `OCR_FAILED` indica falha/indisponibilidade de OCR com texto insuficiente, `TECHNICAL_ERROR` indica erro de processamento e `NEEDS_HUMAN_REVIEW` indica proposta ou condição que precisa de decisão humana.
 
 ## Categorias oficiais
 
@@ -192,7 +219,12 @@ As categorias oficiais são:
 ## Validações locais
 
 ```bash
-python3 -m compileall src
-PYTHONPATH=src python3 -m unittest tests/test_detectors.py tests/test_text_selection.py
-PYTHONPATH=src python3 -m unittest tests/test_ollama_client.py
+python3 -m py_compile src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/ai_reviewer/*.py
+PYTHONPATH=src python3 -m unittest tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
+```
+
+Smoke test opcional com Ollama local:
+
+```bash
+DOC_REGISTER_RUN_OLLAMA_SMOKE=1 OLLAMA_MODEL=qwen3:8b PYTHONPATH=src python3 -m unittest tests/test_ai_reviewer.py
 ```

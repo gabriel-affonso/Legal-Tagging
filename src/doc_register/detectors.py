@@ -379,7 +379,7 @@ def _detect_nibs(text: str, ibans: list[str]) -> list[str]:
     values: list[str] = []
     for match in re.finditer(r"\bNIB\D{0,12}((?:\d[\s.-]*){21})", text, flags=re.IGNORECASE):
         candidate = _normalize_account(match.group(1))
-        if _is_valid_nib(candidate) and candidate not in iban_digits:
+        if _is_valid_nib(candidate):
             values.append(candidate)
     # Unlabelled 21-digit candidates are accepted only if checksum-valid.
     for match in re.finditer(r"(?<!\d)(?:\d[\s.-]*){21}(?!\d)", text):

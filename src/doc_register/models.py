@@ -77,6 +77,15 @@ class ExtractionResult:
     validation_status: str = ""
     validation_issues: str = ""
     review_priority: str = ""
+    ai_review_status: str = ""
+    ai_reviewed_fields: str = ""
+    ai_accepted_fields: str = ""
+    ai_rejected_fields: str = ""
+    ai_review_confidence: str = ""
+    ai_review_model: str = ""
+    ai_review_duration_seconds: str = ""
+    ai_review_reason: str = ""
+    human_review_required: str = ""
     deterministic_json: dict[str, Any] = field(default_factory=dict)
     llm_json: dict[str, Any] = field(default_factory=dict)
     raw_json: dict[str, Any] = field(default_factory=dict)

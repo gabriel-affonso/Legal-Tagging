@@ -76,6 +76,15 @@ TECHNICAL_FIELDS = [
     "text_source",
     "native_text_chars",
     "ocr_text_chars",
+    "ai_review_status",
+    "ai_reviewed_fields",
+    "ai_accepted_fields",
+    "ai_rejected_fields",
+    "ai_review_confidence",
+    "ai_review_model",
+    "ai_review_duration_seconds",
+    "ai_review_reason",
+    "human_review_required",
     "deterministic_json",
     "llm_json",
     "raw_json",
@@ -125,4 +134,3 @@ REQUIRED_FOR_REVIEW = {
     "lease_contract": ["lessor", "lessee", "property_display_name", "contract_start_date", "monthly_rent"],
     "payment_proof": ["payment_date", "payer", "payee", "payment_amount"],
 }
-

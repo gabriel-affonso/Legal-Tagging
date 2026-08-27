@@ -33,10 +33,11 @@ def validate_result(
     ollama_model: str = "qwen3:8b",
     recovery_ai_enabled: bool = False,
     recovery_timeout_seconds: int = 180,
+    recover: bool = True,
 ) -> ExtractionResult:
     """Recover critical fields, validate, score and enrich one result."""
     _ = signals
-    if document_text:
+    if document_text and recover:
         result, _report = recover_critical_fields(
             result,
             file_name=file_name,
@@ -51,28 +52,52 @@ def validate_result(
     quality_score, quality_band = calculate_score(issues)
     review_priority = calculate_review_priority(issues)
     existing = parse_existing_review_reasons(result.review_reason)
-    machine, narrative = _partition_existing_reasons(existing)
-    all_machine = _unique_sorted([*machine, *issues])
-    requires_review = _truthy(result.needs_review) or bool(all_machine) or bool(narrative)
+    _machine, narrative = _partition_existing_reasons(existing)
+    current_machine = _unique_sorted(issues)
+    requires_review = bool(current_machine) or bool(narrative)
+    technical_status = determine_technical_status(result)
 
     result.quality_score = str(quality_score)
     result.quality_band = quality_band
     result.validation_issues = "; ".join(issues)
     result.review_priority = review_priority
 
-    if (result.processing_status or "").strip().lower() == "error":
-        result.validation_status = "ERROR"
+    if technical_status:
+        result.validation_status = technical_status
         result.needs_review = "yes"
         result.review_priority = "HIGH"
+        result.human_review_required = "yes"
+    elif _truthy(result.human_review_required):
+        result.validation_status = "NEEDS_HUMAN_REVIEW"
+        result.needs_review = "yes"
     elif requires_review:
         result.validation_status = "NEEDS_REVIEW"
         result.needs_review = "yes"
     else:
         result.validation_status = "AUTO_APPROVED"
         result.needs_review = "no"
+        result.human_review_required = "no"
 
-    result.review_reason = "; ".join(_unique_order([*all_machine, *narrative]))
+    result.review_reason = "; ".join(
+        _unique_order([*current_machine, *([technical_status] if technical_status else []), *narrative])
+    )
     return result
+
+
+def determine_technical_status(result: ExtractionResult) -> str:
+    if (result.processing_status or "").strip().lower() == "error":
+        return "TECHNICAL_ERROR"
+
+    text_source = (result.text_source or "").strip()
+    native_chars = _as_int(result.native_text_chars)
+    ocr_chars = _as_int(result.ocr_text_chars)
+    notes = (result.extraction_notes or "").upper()
+
+    if "OCR" in notes and ocr_chars == 0 and native_chars < 200:
+        return "OCR_FAILED"
+    if text_source and native_chars == 0 and ocr_chars == 0:
+        return "NEEDS_OCR"
+    return ""
 
 
 def calculate_review_priority(issues: Iterable[str]) -> str:
@@ -103,6 +128,13 @@ def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"yes", "true", "1", "sim"}
 
 
+def _as_int(value: Any) -> int:
+    try:
+        return int(str(value or "0").strip())
+    except ValueError:
+        return 0
+
+
 def _unique_sorted(values: Iterable[str]) -> list[str]:
     return sorted({str(v).strip() for v in values if str(v).strip()})
 
@@ -117,4 +149,9 @@ def _unique_order(values: Iterable[str]) -> list[str]:
     return output
 
 
-__all__ = ["validate_result", "calculate_review_priority", "parse_existing_review_reasons"]
+__all__ = [
+    "validate_result",
+    "calculate_review_priority",
+    "determine_technical_status",
+    "parse_existing_review_reasons",
+]

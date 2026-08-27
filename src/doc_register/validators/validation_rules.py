@@ -13,7 +13,7 @@ GENERIC_NAMES = {
     "PRIMEIRO OUTORGANTE", "SEGUNDO OUTORGANTE", "OUTORGANTE", "OUTORGANTES",
 }
 CRITICAL_FIELDS: dict[str, list[str]] = {
-    "lease_contract": ["lessor", "lessee", "signed_date", "property_article", "monthly_rent"],
+    "lease_contract": ["lessor", "lessee", "signed_date", "property_article", "property_section"],
     "property_document": ["property_article", "property_section", "owner_name"],
     "bank_details": ["iban", "bank_account_holder"],
     "payment_proof": ["payment_date", "payer", "payee", "payment_amount"],
@@ -39,7 +39,15 @@ def extract_year(value: str) -> int | None:
     return int(match.group(1)) if match else None
 
 def validate_missing_critical_fields(record: Any) -> list[str]:
-    return [f"missing_{f}" for f in CRITICAL_FIELDS.get(_get(record, "document_category").lower(), []) if not _get(record, f)]
+    category = _get(record, "document_category").lower()
+    issues = [
+        f"missing_{field}"
+        for field in CRITICAL_FIELDS.get(category, [])
+        if not _get(record, field)
+    ]
+    if category == "lease_contract" and requires_monthly_rent(record) and not _get(record, "monthly_rent"):
+        issues.append("missing_monthly_rent")
+    return issues
 
 def validate_generic_names(record: Any) -> list[str]:
     issues=[]
@@ -103,6 +111,25 @@ def validate_monthly_rent(record: Any) -> list[str]:
     if not MONEY_PATTERN.fullmatch(" ".join(value.split())): return ["invalid_monthly_rent_format"]
     digits=re.sub(r"[^0-9]", "", value)
     return ["invalid_monthly_rent_value"] if not digits or int(digits)==0 else []
+
+def requires_monthly_rent(record: Any) -> bool:
+    if _get(record, "document_category").lower() != "lease_contract":
+        return False
+    subtype_text = " ".join(
+        _get(record, field)
+        for field in ("document_type", "document_subtype", "contract_type")
+    )
+    normalized = normalize_text(subtype_text)
+    non_rent_markers = {
+        "OPCAO", "OPTION", "CPCV", "PROMESSA", "COMPRA", "AQUISICAO",
+        "RATIFICACAO", "HABILITACAO", "HERDEIROS", "REPRESENTACAO",
+    }
+    if any(marker in normalized for marker in non_rent_markers):
+        return False
+    rent_markers = {"ARRENDAMENTO", "LOCACAO", "LEASE", "RENDA", "RENT"}
+    if any(marker in normalized for marker in rent_markers):
+        return True
+    return True
 
 ValidationFunction=Callable[[Any], list[str]]
 VALIDATORS: tuple[ValidationFunction,...] = (

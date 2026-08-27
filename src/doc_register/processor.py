@@ -14,7 +14,9 @@ from .ollama_client import OllamaConnectionError, extract_with_ollama
 from .pdf_text import extract_text_with_optional_ocr
 from .registry import ExcelRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
+from .ai_reviewer import review_if_needed
 from .validators.integration import recover_validate_result
+from .validators.validator import validate_result
 
 
 LOGGER = logging.getLogger(__name__)
@@ -210,6 +212,25 @@ class DocumentProcessor:
             file_name=candidate.source_path.name,
             signals=signals,
             document_text=document_text,
+        )
+        result = review_if_needed(
+            result,
+            config=self.config,
+            file_name=candidate.source_path.name,
+            document_text=document_text,
+        )
+        result = validate_result(
+            result,
+            signals,
+            document_text,
+            file_name=candidate.source_path.name,
+            ollama_url=self.config.ollama_url,
+            ollama_model=self.config.ollama_model,
+            recovery_ai_enabled=False,
+            recovery_timeout_seconds=self.config.critical_recovery_timeout_seconds
+            if hasattr(self.config, "critical_recovery_timeout_seconds")
+            else 180,
+            recover=False,
         )
         self.register.append(candidate, result)
         self._archive_candidate(candidate)

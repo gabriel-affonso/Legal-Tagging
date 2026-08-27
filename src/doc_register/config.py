@@ -28,6 +28,11 @@ class AppConfig:
     max_pdf_pages: int
     max_text_chars: int
     copy_only_recent_minutes: int
+    ai_review_enabled: bool = True
+    ai_review_timeout_seconds: int = 180
+    ai_review_max_evidence_chars: int = 6500
+    ai_review_auto_accept_confidence: float = 0.90
+    ai_review_human_confidence: float = 0.70
 
     @classmethod
     def from_json(cls, path: Path) -> "AppConfig":
@@ -65,6 +70,11 @@ class AppConfig:
             max_pdf_pages=int(raw.get("max_pdf_pages", 12)),
             max_text_chars=int(raw.get("max_text_chars", 24000)),
             copy_only_recent_minutes=int(raw.get("copy_only_recent_minutes", 0)),
+            ai_review_enabled=_as_bool(raw.get("ai_review_enabled", True)),
+            ai_review_timeout_seconds=int(raw.get("ai_review_timeout_seconds", 180)),
+            ai_review_max_evidence_chars=int(raw.get("ai_review_max_evidence_chars", 6500)),
+            ai_review_auto_accept_confidence=float(raw.get("ai_review_auto_accept_confidence", 0.90)),
+            ai_review_human_confidence=float(raw.get("ai_review_human_confidence", 0.70)),
         )
 
     def ensure_directories(self) -> None:
