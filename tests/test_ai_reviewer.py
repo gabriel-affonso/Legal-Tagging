@@ -9,8 +9,10 @@ from doc_register.ai_reviewer.integration import review_if_needed
 from doc_register.ai_reviewer.models import AIFieldProposal, AIReviewRequest
 from doc_register.ai_reviewer.proposal_validator import validate_proposal
 from doc_register.ai_reviewer.reviewer import request_ai_review
+from doc_register.contract_types import apply_contract_type_hints
 from doc_register.config import AppConfig
 from doc_register.models import ExtractionResult
+from doc_register.schemas import REGISTER_COLUMNS
 from doc_register.validators.validation_rules import requires_monthly_rent
 from doc_register.validators.validator import validate_result
 
@@ -52,6 +54,46 @@ class AIReviewerTests(unittest.TestCase):
 
         self.assertFalse(requires_monthly_rent(result))
         self.assertNotIn("missing_monthly_rent", validate_result(result).validation_issues)
+
+    def test_monthly_rent_not_required_for_cpcv_or_assignment(self) -> None:
+        cpcv = ExtractionResult(
+            document_category="lease_contract",
+            document_subtype="contrato_promessa_compra_venda",
+        )
+        assignment = ExtractionResult(
+            document_category="lease_contract",
+            contract_type="acordo_cedencia_posicao_contratual",
+        )
+
+        self.assertFalse(requires_monthly_rent(cpcv))
+        self.assertFalse(requires_monthly_rent(assignment))
+        self.assertNotIn("missing_monthly_rent", validate_result(cpcv).validation_issues)
+        self.assertNotIn("missing_monthly_rent", validate_result(assignment).validation_issues)
+
+    def test_contract_type_hints_canonicalize_cpcv_and_assignment(self) -> None:
+        cpcv = ExtractionResult(document_category="other", document_type="Contrato")
+        assignment = ExtractionResult(document_category="", document_type="Acordo")
+
+        apply_contract_type_hints(
+            cpcv,
+            "Contrato-Promessa de Compra e Venda entre promitente vendedor e comprador",
+        )
+        apply_contract_type_hints(
+            assignment,
+            "Acordo de Cedencia de Posicao Contratual entre cedente e cessionario",
+        )
+
+        self.assertEqual(cpcv.document_category, "lease_contract")
+        self.assertEqual(cpcv.document_type, "Contrato Promessa de Compra e Venda")
+        self.assertEqual(cpcv.document_subtype, "contrato_promessa_compra_venda")
+        self.assertEqual(assignment.document_category, "lease_contract")
+        self.assertEqual(assignment.document_type, "Acordo de Cedencia de Posicao Contratual")
+        self.assertEqual(assignment.contract_type, "acordo_cedencia_posicao_contratual")
+
+    def test_contract_price_fields_are_in_register_columns(self) -> None:
+        self.assertIn("option_price", REGISTER_COLUMNS)
+        self.assertIn("purchase_price", REGISTER_COLUMNS)
+        self.assertIn("assignment_price", REGISTER_COLUMNS)
 
     def test_party_proposal_requires_document_support(self) -> None:
         text = "Entre Ana Maria Lopes, na qualidade de Senhoria, e GESTO ENERGIA, S.A."

@@ -7,6 +7,7 @@ import re
 from typing import Any
 from urllib import error, request
 
+from .contract_types import contract_type_options_for_prompt
 from .detectors import DeterministicSignals
 from .models import ExtractionResult
 from .schemas import CATEGORY_EXTRACTION_FIELDS, OFFICIAL_CATEGORIES
@@ -47,6 +48,9 @@ Deterministic signals:
 
 Official categories:
 {category_list}
+
+Contract subtypes for document_category="lease_contract":
+{contract_type_list}
 
 Return this exact JSON object:
 {{
@@ -101,19 +105,22 @@ Highlighted relevant excerpts:
 {highlighted_text}
 """
 
-
 CATEGORY_PROMPT_TREE = {
     "lease_contract": (
-        "Large type: lease/contractual document.\n"
-        "Possibilities: lease agreement, lease amendment, renewal, termination, addendum, rent update.\n"
-        "Extract lessor, lessee, signed date, property and rent only when explicit.\n"
+        "Large type: real-estate contractual document.\n"
+        "Possibilities: lease agreement, lease amendment, renewal, termination, addendum, rent update, purchase option, CPCV/contrato-promessa de compra e venda, or acordo de cedencia/cessao de posicao contratual.\n"
+        "Use canonical contract_type/document_subtype codes when possible: contrato_de_arrendamento, opcao_de_compra, contrato_promessa_compra_venda, acordo_cedencia_posicao_contratual, ratificacao, aditamento, renovacao, rescisao.\n"
+        "For CPCV/contrato-promessa de compra e venda, identify it as contrato_promessa_compra_venda; capture the explicit purchase/promised sale price in purchase_price when present, and never convert it into monthly_rent.\n"
+        "For purchase option agreements, identify opcao_de_compra and capture the explicit option price in option_price when present.\n"
+        "For acordo de cedencia/cessao de posicao contratual, identify it as acordo_cedencia_posicao_contratual; capture the explicit assignment/cession consideration in assignment_price when present; do not treat cedente/cessionario/cedido as lessor/lessee unless the text explicitly says they are senhorio/arrendatario or the assigned contract relationship makes that mapping explicit.\n"
+        "Extract lessor, lessee, signed date, property and rent only when explicit and applicable to the subtype.\n"
         "signed_date is the date on which the parties signed the contract. Do not use an effective, licence, registration or certification date as signed_date.\n"
         "If the contract takes effect after a licence is obtained, keep contract_start_date empty unless an explicit calendar date is stated.\n"
         "When there are multiple lessors, put all names in lessor separated by semicolons. Never use a key named lessors.\n"
         "lessor and lessee must contain names only. Do not include identification numbers, tax IDs, citizen card numbers, marital status, matrimonial regime, addresses, dates, or descriptive prose.\n"
         "Keep every extracted value concise. Never copy complete clauses or paragraphs.\n"
         "When OCR is corrupted, extract only a name that remains clearly readable; otherwise return an empty string.\n"
-        "Extract monthly_rent only when the document explicitly states a monthly rent; do not convert other frequencies.\n"
+        "Extract monthly_rent only for an actual lease/rent obligation when the document explicitly states a monthly rent; do not convert annual rent, option price, purchase price, deposit, signal, transfer price, assignment price or other consideration.\n"
         "Extract property data only from the leased-property description, not from the parties' fiscal addresses.\n"
         "Do not fill bank fields unless bank data is clearly part of payment instructions."
     ),
@@ -267,6 +274,7 @@ def classify_with_ollama(
             file_name=file_name,
             deterministic_json=json.dumps(signals.to_dict(), ensure_ascii=False, indent=2),
             category_list=_category_list(),
+            contract_type_list=contract_type_options_for_prompt(),
             classification_text=classification_text,
         ),
         timeout_seconds=timeout_seconds,

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from .config import AppConfig
+from .contract_types import apply_contract_type_hints
 from .detectors import detect_signals
 from .models import ExtractionResult, PdfCandidate
 from .ollama_client import OllamaConnectionError, extract_with_ollama
@@ -205,6 +206,13 @@ class DocumentProcessor:
                 result.extraction_notes,
                 extracted_text.notes,
             )
+        apply_contract_type_hints(
+            result,
+            candidate.source_path.name,
+            document_text[:3000],
+            signals.contract_type,
+            signals.contract_type_label,
+        )
 
         result = recover_validate_result(
             result,

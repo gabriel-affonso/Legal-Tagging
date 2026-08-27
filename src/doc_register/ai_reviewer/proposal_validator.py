@@ -175,7 +175,11 @@ def _validate_monthly_rent(
     monthly_markers = ("RENDA MENSAL", "MENSALMENTE", "POR MES", "POR MÊS", "MENSAIS", "VALOR MENSAL")
     if not any(marker in normalized_evidence for marker in monthly_markers):
         return "monthly_context_missing"
-    forbidden = ("POR ANO", "ANUAL", "HECTARE", "ASSINATURA", "PRECO DE COMPRA", "PREÇO DE COMPRA")
+    forbidden = (
+        "POR ANO", "ANUAL", "HECTARE", "ASSINATURA", "PRECO DE COMPRA",
+        "PREÇO DE COMPRA", "SINAL", "PROMESSA DE COMPRA", "CEDENCIA",
+        "CEDÊNCIA", "CESSAO", "CESSÃO",
+    )
     if any(marker in normalized_evidence for marker in forbidden):
         return "non_monthly_money_context"
     checks.append("monthly_rent_context_confirmed")

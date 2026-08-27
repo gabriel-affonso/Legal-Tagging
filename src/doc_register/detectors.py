@@ -5,6 +5,7 @@ import re
 import unicodedata
 from typing import Any, Iterable
 
+from .contract_types import detect_contract_type, is_contractual_text
 from .schemas import OFFICIAL_CATEGORIES
 
 
@@ -77,7 +78,9 @@ PROPERTY_WORD_RE = re.compile(
 )
 LEASE_WORD_RE = re.compile(
     r"\b(?:contrato\s+de\s+arrendamento|arrendamento|senhorio|arrendat[aá]rio|"
-    r"renda|locador|locat[aá]rio)\b",
+    r"renda|locador|locat[aá]rio|cpcv|contrato[-\s]+promessa|"
+    r"promitente\s+(?:comprador|vendedor)|ced[eê]ncia\s+de\s+posi[cç][aã]o\s+contratual|"
+    r"cess[aã]o\s+de\s+posi[cç][aã]o\s+contratual|cedente|cession[aá]rio)\b",
     re.IGNORECASE,
 )
 
@@ -115,6 +118,8 @@ class DeterministicSignals:
     property_parish: str = ""
     property_municipality: str = ""
     property_district: str = ""
+    contract_type: str = ""
+    contract_type_label: str = ""
     has_bank_terms: bool = False
     has_payment_terms: bool = False
     has_property_terms: bool = False
@@ -136,6 +141,8 @@ class DeterministicSignals:
             "property_parish": self.property_parish,
             "property_municipality": self.property_municipality,
             "property_district": self.property_district,
+            "contract_type": self.contract_type,
+            "contract_type_label": self.contract_type_label,
             "has_bank_terms": self.has_bank_terms,
             "has_payment_terms": self.has_payment_terms,
             "has_property_terms": self.has_property_terms,
@@ -164,6 +171,10 @@ def detect_signals(file_name: str, text: str) -> DeterministicSignals:
     signals.property_parish = _extract_place(normalized_text, PARISH_LABEL_RE, "parish")
     signals.property_municipality = _extract_place(normalized_text, MUNICIPALITY_LABEL_RE, "municipality")
     signals.property_district = _extract_place(normalized_text, DISTRICT_LABEL_RE, "district")
+    contract_type = detect_contract_type(file_name, normalized_text)
+    if contract_type:
+        signals.contract_type = contract_type.code
+        signals.contract_type_label = contract_type.label
 
     signals.has_bank_terms = bool(BANK_WORD_RE.search(normalized_text) or signals.ibans or signals.nibs or signals.bic_swifts)
     signals.has_payment_terms = bool(PAYMENT_WORD_RE.search(normalized_text))
@@ -295,20 +306,11 @@ def _category_from_file_name(file_name: str, reasons: list[str]) -> str:
     )
     contractual_action_match = re.search(
         r"\b(?:ratifica[cç][aã]o|aditamento|renova[cç][aã]o|rescis[aã]o|"
-        r"cessa[cç][aã]o|substitui[cç][aã]o)\b",
+        r"cessa[cç][aã]o|substitui[cç][aã]o|ced[eê]ncia|cess[aã]o|cpcv|promessa)\b",
         file_name,
         flags=re.IGNORECASE,
     )
-    explicit_lease_words = any(
-        token in lowered
-        for token in [
-            "contrato",
-            "arrendamento",
-            "aditamento",
-            "ratificacao",
-            "ratificação",
-        ]
-    )
+    explicit_lease_words = is_contractual_text(file_name)
     lease_name_match = (
         lease_code_match is not None
         or explicit_lease_words
@@ -332,7 +334,7 @@ def _category_from_file_name(file_name: str, reasons: list[str]) -> str:
         ),
         (
             "lease_contract",
-            "CA/CAV/Contrato/Arrendamento/Ratificacao",
+            "CA/CAV/Contrato/Arrendamento/CPCV/Cedencia/Ratificacao",
             lease_name_match,
         ),
         (
@@ -359,6 +361,8 @@ def _category_from_file_name(file_name: str, reasons: list[str]) -> str:
 def _suggest_category(signals: DeterministicSignals) -> str:
     if signals.file_category in OFFICIAL_CATEGORIES:
         return signals.file_category
+    if signals.contract_type:
+        return "lease_contract"
     if signals.has_lease_terms:
         return "lease_contract"
     if signals.has_property_terms:

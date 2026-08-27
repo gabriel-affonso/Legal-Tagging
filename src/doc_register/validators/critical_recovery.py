@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib import error, request
 
+from ..contract_types import canonical_contract_type, detect_contract_type
 from ..models import ExtractionResult
 
 GENERIC_PARTIES = {
@@ -159,6 +160,8 @@ def _recovery_targets(result: ExtractionResult) -> list[str]:
         "property_section", "monthly_rent",
     )
     for field_name in fields:
+        if field_name == "monthly_rent" and not _should_recover_monthly_rent(result):
+            continue
         value = str(getattr(result, field_name, "") or "").strip()
         is_generic_party = (
             field_name in {"lessor", "lessee"}
@@ -167,6 +170,21 @@ def _recovery_targets(result: ExtractionResult) -> list[str]:
         if not value or is_generic_party:
             targets.append(field_name)
     return targets
+
+
+def _should_recover_monthly_rent(result: ExtractionResult) -> bool:
+    canonical = (
+        canonical_contract_type(str(getattr(result, "contract_type", "") or ""))
+        or canonical_contract_type(str(getattr(result, "document_subtype", "") or ""))
+        or detect_contract_type(
+            str(getattr(result, "document_type", "") or ""),
+            str(getattr(result, "document_subtype", "") or ""),
+            str(getattr(result, "contract_type", "") or ""),
+        )
+    )
+    if canonical is not None:
+        return canonical.requires_monthly_rent
+    return True
 
 
 def _recover_known_lessee(
@@ -370,7 +388,8 @@ def _focused_ollama_recovery(
         "Recover only the missing critical fields from this confidential "
         "Portuguese lease contract. Use only explicit evidence in the text. "
         "Names must be people or companies, never labels. signed_date must be "
-        "the signature date. monthly_rent must be explicitly monthly. Return "
+        "the signature date. monthly_rent must be explicitly monthly and must "
+        "not be a purchase price, option price or cedencia/cessao consideration. Return "
         "exactly the supplied flat JSON keys, string values only.\n\n"
         f"File name (candidate hint only): {file_name}\n"
         f"Current values: {json.dumps(current, ensure_ascii=False)}\n"

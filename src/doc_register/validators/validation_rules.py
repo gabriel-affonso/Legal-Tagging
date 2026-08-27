@@ -4,6 +4,8 @@ import unicodedata
 from datetime import datetime
 from typing import Any, Callable
 
+from ..contract_types import canonical_contract_type, detect_contract_type
+
 CURRENT_YEAR = datetime.now().year
 MAX_ACCEPTED_FUTURE_YEAR_OFFSET = 1
 GENERIC_NAMES = {
@@ -112,6 +114,22 @@ def validate_monthly_rent(record: Any) -> list[str]:
     digits=re.sub(r"[^0-9]", "", value)
     return ["invalid_monthly_rent_value"] if not digits or int(digits)==0 else []
 
+def validate_contract_prices(record: Any) -> list[str]:
+    if _get(record, "document_category").lower()!="lease_contract": return []
+    issues=[]
+    for field in ("option_price", "purchase_price", "assignment_price"):
+        value=_get(record, field)
+        if not value:
+            continue
+        compact=re.sub(r"[^A-Z0-9]", "", normalize_text(value))
+        if compact.startswith("PT50") or len(re.sub(r"\D", "", value)) >= 16:
+            issues.append(f"invalid_{field}_format")
+        elif not MONEY_PATTERN.fullmatch(" ".join(value.split())):
+            issues.append(f"invalid_{field}_format")
+        elif int(re.sub(r"[^0-9]", "", value) or "0") == 0:
+            issues.append(f"invalid_{field}_value")
+    return issues
+
 def requires_monthly_rent(record: Any) -> bool:
     if _get(record, "document_category").lower() != "lease_contract":
         return False
@@ -119,6 +137,14 @@ def requires_monthly_rent(record: Any) -> bool:
         _get(record, field)
         for field in ("document_type", "document_subtype", "contract_type")
     )
+    canonical = (
+        canonical_contract_type(_get(record, "contract_type"))
+        or canonical_contract_type(_get(record, "document_subtype"))
+        or detect_contract_type(subtype_text)
+    )
+    if canonical is not None:
+        return canonical.requires_monthly_rent
+
     normalized = normalize_text(subtype_text)
     non_rent_markers = {
         "OPCAO", "OPTION", "CPCV", "PROMESSA", "COMPRA", "AQUISICAO",
@@ -136,6 +162,7 @@ VALIDATORS: tuple[ValidationFunction,...] = (
     validate_missing_critical_fields, validate_generic_names, validate_future_dates,
     validate_property_section, validate_confidence, validate_iban,
     validate_portuguese_tax_id, validate_known_lessee, validate_monthly_rent,
+    validate_contract_prices,
 )
 def run_all_validations(record: Any) -> list[str]:
     issues=[]

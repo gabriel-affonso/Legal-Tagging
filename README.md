@@ -147,6 +147,9 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `rent_payment_day`
 - `monthly_rent`
 - `currency`
+- `option_price`
+- `purchase_price`
+- `assignment_price`
 - `bank_account_holder`
 - `iban`
 - `nib`
@@ -188,6 +191,16 @@ A validação final depois do Step 2 é executada em modo puro, sem nova recuper
 
 Estados técnicos são separados de revisão semântica: `NEEDS_OCR` indica ausência de texto utilizável, `OCR_FAILED` indica falha/indisponibilidade de OCR com texto insuficiente, `TECHNICAL_ERROR` indica erro de processamento e `NEEDS_HUMAN_REVIEW` indica proposta ou condição que precisa de decisão humana.
 
+## Tipologias Contratuais
+
+Os instrumentos contratuais usam `document_category=lease_contract` por compatibilidade com o schema existente, mas `document_subtype` e `contract_type` são normalizados para códigos canónicos:
+
+- `contrato_de_arrendamento`: contrato de arrendamento; `monthly_rent` é aplicável quando houver renda mensal explícita.
+- `contrato_promessa_compra_venda`: CPCV ou contrato-promessa de compra e venda; `purchase_price` guarda o preço prometido quando explícito.
+- `opcao_de_compra`: opção de compra; `option_price` guarda o preço da opção quando explícito.
+- `acordo_cedencia_posicao_contratual`: acordo de cedência/cessão de posição contratual; `assignment_price` guarda a contrapartida da cedência quando explícita.
+- `ratificacao`, `aditamento`, `renovacao`, `rescisao`: instrumentos acessórios; `monthly_rent` só deve ser preenchido quando o texto repetir explicitamente uma renda mensal.
+
 ## Categorias oficiais
 
 O Ollama trabalha em duas avaliações separadas:
@@ -197,7 +210,7 @@ O Ollama trabalha em duas avaliações separadas:
 
 As categorias oficiais são:
 
-- `lease_contract`: contrato de arrendamento.
+- `lease_contract`: instrumento contratual imobiliário, incluindo arrendamento, aditamento, renovação, rescisão/cessação, opção de compra, CPCV e acordo de cedência de posição contratual.
 - `property_document`: caderneta predial, certidão predial, CRP, registo predial, matriz ou averbamento.
 - `bank_details`: IBAN, NIB, BIC/SWIFT, titular de conta e dados bancários sem prova clara de pagamento.
 - `payment_proof`: comprovativo de transferência/pagamento com data, pagador, beneficiário e valor.
@@ -211,7 +224,7 @@ As categorias oficiais são:
 
 - PDFs digitais normalmente nao precisam de OCR. PDFs escaneados como imagem passam pelo `ocrmypdf` quando `ocr_enabled` estiver ativo.
 - O Power Automate pode continuar fazendo o filtro de PDFs adicionados na última hora. Localmente, este programa também evita duplicados por hash.
-- Para contratos de arrendamento, o schema pede signatários, arrendador, arrendatário, datas e renda mensal.
+- Para instrumentos contratuais, o schema pede signatários, partes contratuais quando aplicável, datas, imóvel e valores específicos. `monthly_rent` só é obrigatório para contrato de arrendamento; CPCV usa `purchase_price`, opção de compra usa `option_price`, e cedência/cessão de posição contratual usa `assignment_price`.
 - `property_display_name` é montado automaticamente com nome, artigo, secção e número quando o LLM não preencher a coluna conjunta.
 - `needs_review` fica `yes` quando a confiança é baixa/média, quando há notas de extração, quando a categoria determinística diverge da categoria do LLM, quando faltam campos essenciais ou quando há campos suspeitos.
 - Erros de processamento são registrados no Excel com `processing_status=error` quando o arquivo já foi copiado para a área local.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 OFFICIAL_CATEGORIES = {
-    "lease_contract": "Contrato de arrendamento.",
+    "lease_contract": "Instrumento contratual imobiliario: arrendamento, aditamento, renovacao, cessacao/rescisao, opcao de compra, CPCV ou cedencia de posicao contratual.",
     "property_document": "Caderneta, certidao, CRP, registo predial, matriz ou averbamento.",
     "bank_details": "Dados bancarios com IBAN, NIB, BIC/SWIFT, titular ou conta, sem prova clara de pagamento.",
     "payment_proof": "Comprovativo de transferencia ou pagamento com data, pagador, beneficiario e valor.",
@@ -35,6 +35,9 @@ LEASE_FIELDS = [
     "rent_payment_day",
     "monthly_rent",
     "currency",
+    "option_price",
+    "purchase_price",
+    "assignment_price",
 ]
 
 PROPERTY_FIELDS = [
@@ -131,6 +134,6 @@ CATEGORY_EXTRACTION_FIELDS = {
 
 
 REQUIRED_FOR_REVIEW = {
-    "lease_contract": ["lessor", "lessee", "property_display_name", "contract_start_date", "monthly_rent"],
+    "lease_contract": ["lessor", "lessee", "property_display_name", "contract_start_date"],
     "payment_proof": ["payment_date", "payer", "payee", "payment_amount"],
 }

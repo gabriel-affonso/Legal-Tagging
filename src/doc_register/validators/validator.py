@@ -18,7 +18,10 @@ MEDIUM_PRIORITY_ISSUES = {
     "missing_property_section", "missing_owner_name", "invalid_property_section",
     "invalid_owner_tax_id_format", "invalid_owner_tax_id_checksum",
     "invalid_or_multiple_owner_tax_id", "invalid_monthly_rent_format",
-    "invalid_monthly_rent_value", "low_confidence",
+    "invalid_monthly_rent_value", "invalid_option_price_format",
+    "invalid_purchase_price_format", "invalid_assignment_price_format",
+    "invalid_option_price_value", "invalid_purchase_price_value",
+    "invalid_assignment_price_value", "low_confidence",
 }
 ISSUE_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -106,7 +109,7 @@ def calculate_review_priority(issues: Iterable[str]) -> str:
         return "NONE"
     if any(i in HIGH_PRIORITY_ISSUES or i.startswith(("invalid_iban_", "generic_lessor", "generic_lessee")) for i in values):
         return "HIGH"
-    if any(i in MEDIUM_PRIORITY_ISSUES or i.startswith(("future_date_", "invalid_owner_tax_id_", "invalid_monthly_rent_")) for i in values):
+    if any(i in MEDIUM_PRIORITY_ISSUES or i.startswith(("future_date_", "invalid_owner_tax_id_", "invalid_monthly_rent_", "invalid_option_price_", "invalid_purchase_price_", "invalid_assignment_price_")) for i in values):
         return "MEDIUM"
     return "LOW"
 
