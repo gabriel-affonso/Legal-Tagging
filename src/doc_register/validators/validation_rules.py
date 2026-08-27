@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any, Callable
 
 from ..contract_types import canonical_contract_type, detect_contract_type
+from .iban_recovery import is_valid_iban
+from .name_quality import validate_name_field
 
 CURRENT_YEAR = datetime.now().year
 MAX_ACCEPTED_FUTURE_YEAR_OFFSET = 1
@@ -59,6 +61,12 @@ def validate_generic_names(record: Any) -> list[str]:
             issues.append(f"generic_{field}")
     return issues
 
+def validate_name_quality(record: Any) -> list[str]:
+    issues=[]
+    for field in ("lessor", "lessee", "owner_name", "bank_account_holder", "payer", "payee"):
+        issues.extend(validate_name_field(field, _get(record, field)))
+    return issues
+
 def validate_future_dates(record: Any) -> list[str]:
     issues=[]
     for field in ("signed_date", "document_date", "contract_start_date", "contract_end_date", "payment_date"):
@@ -77,15 +85,19 @@ def validate_confidence(record: Any) -> list[str]:
     if value and value not in {"low", "medium", "high"}: return ["invalid_confidence"]
     return []
 
+def validate_ocr_quality(record: Any) -> list[str]:
+    flags = {
+        part.strip()
+        for part in _get(record, "ocr_quality_flags").replace(",", ";").split(";")
+        if part.strip()
+    }
+    return ["ocr_quality_low"] if "ocr_quality_low" in flags else []
+
 def validate_iban(record: Any) -> list[str]:
     iban=compact_alphanumeric(_get(record, "iban"))
     if not iban: return []
     if not IBAN_ALLOWED_PATTERN.fullmatch(iban): return ["invalid_iban_format"]
-    rearranged=iban[4:]+iban[:4]
-    numeric="".join(c if c.isdigit() else str(ord(c)-55) for c in rearranged)
-    remainder=0
-    for c in numeric: remainder=(remainder*10+int(c))%97
-    return [] if remainder==1 else ["invalid_iban_checksum"]
+    return [] if is_valid_iban(iban) else ["invalid_iban_checksum"]
 
 def validate_portuguese_tax_id(record: Any) -> list[str]:
     raw=_get(record, "owner_tax_id")
@@ -130,6 +142,19 @@ def validate_contract_prices(record: Any) -> list[str]:
             issues.append(f"invalid_{field}_value")
     return issues
 
+def validate_contract_amount_consistency(record: Any) -> list[str]:
+    if _get(record, "document_category").lower()!="lease_contract":
+        return []
+    issues=[]
+    monthly=_money_key(_get(record, "monthly_rent"))
+    if monthly and not requires_monthly_rent(record):
+        issues.append("suspicious_monthly_rent_for_contract_subtype")
+    for field in ("option_price", "purchase_price", "assignment_price"):
+        price=_money_key(_get(record, field))
+        if monthly and price and monthly == price:
+            issues.append(f"monthly_rent_conflicts_with_{field}")
+    return issues
+
 def requires_monthly_rent(record: Any) -> bool:
     if _get(record, "document_category").lower() != "lease_contract":
         return False
@@ -160,11 +185,17 @@ def requires_monthly_rent(record: Any) -> bool:
 ValidationFunction=Callable[[Any], list[str]]
 VALIDATORS: tuple[ValidationFunction,...] = (
     validate_missing_critical_fields, validate_generic_names, validate_future_dates,
-    validate_property_section, validate_confidence, validate_iban,
+    validate_name_quality, validate_property_section, validate_confidence,
+    validate_ocr_quality, validate_iban,
     validate_portuguese_tax_id, validate_known_lessee, validate_monthly_rent,
-    validate_contract_prices,
+    validate_contract_prices, validate_contract_amount_consistency,
 )
 def run_all_validations(record: Any) -> list[str]:
     issues=[]
     for validator in VALIDATORS: issues.extend(validator(record))
     return sorted(set(issues))
+
+def _money_key(value: str) -> str:
+    if not value:
+        return ""
+    return re.sub(r"[^0-9]", "", value)

@@ -5,6 +5,9 @@ from typing import Any, Iterable
 
 from ..models import ExtractionResult
 from .critical_recovery import recover_critical_fields
+from .field_recovery import recover_labelled_fields
+from .iban_recovery import recover_iban_fields
+from .ocr_quality import apply_ocr_quality
 from .quality_score import calculate_score
 from .validation_rules import run_all_validations
 
@@ -12,6 +15,9 @@ HIGH_PRIORITY_ISSUES = {
     "missing_lessor", "missing_lessee", "missing_iban",
     "missing_bank_account_holder", "invalid_iban_format",
     "invalid_iban_checksum", "generic_lessor", "generic_lessee",
+    "generic_owner_name", "invalid_lessor_format", "invalid_lessee_format",
+    "invalid_owner_name_format", "invalid_bank_account_holder_format",
+    "ocr_corrupted_party_name",
 }
 MEDIUM_PRIORITY_ISSUES = {
     "missing_signed_date", "missing_monthly_rent", "missing_property_article",
@@ -22,6 +28,13 @@ MEDIUM_PRIORITY_ISSUES = {
     "invalid_purchase_price_format", "invalid_assignment_price_format",
     "invalid_option_price_value", "invalid_purchase_price_value",
     "invalid_assignment_price_value", "low_confidence",
+    "ocr_quality_low",
+    "suspicious_monthly_rent_for_contract_subtype",
+    "monthly_rent_conflicts_with_option_price",
+    "monthly_rent_conflicts_with_purchase_price",
+    "monthly_rent_conflicts_with_assignment_price",
+    "property_article_conflicts_with_deterministic",
+    "property_section_conflicts_with_deterministic",
 }
 ISSUE_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -39,8 +52,17 @@ def validate_result(
     recover: bool = True,
 ) -> ExtractionResult:
     """Recover critical fields, validate, score and enrich one result."""
-    _ = signals
+    if document_text:
+        result = apply_ocr_quality(result, document_text=document_text)
     if document_text and recover:
+        result, _iban_report = recover_iban_fields(
+            result,
+            document_text=document_text,
+        )
+        result, _field_report = recover_labelled_fields(
+            result,
+            document_text=document_text,
+        )
         result, _report = recover_critical_fields(
             result,
             file_name=file_name,
@@ -51,7 +73,10 @@ def validate_result(
             timeout_seconds=recovery_timeout_seconds,
         )
 
-    issues = _unique_sorted(run_all_validations(result))
+    issues = _unique_sorted([
+        *run_all_validations(result),
+        *_cross_field_signal_issues(result, signals),
+    ])
     quality_score, quality_band = calculate_score(issues)
     review_priority = calculate_review_priority(issues)
     existing = parse_existing_review_reasons(result.review_reason)
@@ -87,6 +112,21 @@ def validate_result(
     return result
 
 
+def _cross_field_signal_issues(result: ExtractionResult, signals: Any | None) -> list[str]:
+    if signals is None:
+        return []
+    issues: list[str] = []
+    signal_article = str(getattr(signals, "property_article", "") or "").strip()
+    signal_section = str(getattr(signals, "property_section", "") or "").strip()
+    result_article = str(result.property_article or "").strip()
+    result_section = str(result.property_section or "").strip()
+    if signal_article and result_article and signal_article != result_article:
+        issues.append("property_article_conflicts_with_deterministic")
+    if signal_section and result_section and signal_section.upper() != result_section.upper():
+        issues.append("property_section_conflicts_with_deterministic")
+    return issues
+
+
 def determine_technical_status(result: ExtractionResult) -> str:
     if (result.processing_status or "").strip().lower() == "error":
         return "TECHNICAL_ERROR"
@@ -109,7 +149,16 @@ def calculate_review_priority(issues: Iterable[str]) -> str:
         return "NONE"
     if any(i in HIGH_PRIORITY_ISSUES or i.startswith(("invalid_iban_", "generic_lessor", "generic_lessee")) for i in values):
         return "HIGH"
-    if any(i in MEDIUM_PRIORITY_ISSUES or i.startswith(("future_date_", "invalid_owner_tax_id_", "invalid_monthly_rent_", "invalid_option_price_", "invalid_purchase_price_", "invalid_assignment_price_")) for i in values):
+    if any(
+        i in MEDIUM_PRIORITY_ISSUES
+        or i.startswith((
+            "future_date_", "invalid_owner_tax_id_", "invalid_monthly_rent_",
+            "invalid_option_price_", "invalid_purchase_price_",
+            "invalid_assignment_price_", "property_article_conflicts_",
+            "property_section_conflicts_", "monthly_rent_conflicts_",
+        ))
+        for i in values
+    ):
         return "MEDIUM"
     return "LOW"
 

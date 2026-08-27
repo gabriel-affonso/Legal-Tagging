@@ -98,6 +98,7 @@ class ExcelRegister:
             "document_date": 18,
             "summary": 54,
             "extraction_notes": 42,
+            "ocr_quality_flags": 34,
             "lessor": 34,
             "lessee": 34,
             "option_price": 18,

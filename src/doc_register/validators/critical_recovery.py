@@ -9,6 +9,7 @@ from urllib import error, request
 
 from ..contract_types import canonical_contract_type, detect_contract_type
 from ..models import ExtractionResult
+from .name_quality import validate_name_field
 
 GENERIC_PARTIES = {
     "SENHORIO", "SENHORIOS", "ARRENDATARIO", "ARRENDATARIA",
@@ -167,7 +168,11 @@ def _recovery_targets(result: ExtractionResult) -> list[str]:
             field_name in {"lessor", "lessee"}
             and _normalize(value) in GENERIC_PARTIES
         )
-        if not value or is_generic_party:
+        is_invalid_party = (
+            field_name in {"lessor", "lessee"}
+            and bool(validate_name_field(field_name, value))
+        )
+        if not value or is_generic_party or is_invalid_party:
             targets.append(field_name)
     return targets
 

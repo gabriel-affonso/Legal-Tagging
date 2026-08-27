@@ -33,7 +33,7 @@ def build_review_prompt(request: AIReviewRequest) -> str:
         "  ]\n"
         "}\n\n"
         "Field rules:\n"
-        "- lessor and lessee must be names only; never generic labels, IDs, addresses or clauses.\n"
+        "- lessor, lessee and owner_name must be names only; never generic labels, IDs, addresses or clauses.\n"
         "- signed_date must be the date the parties signed, not validity, registry, licence or issue date.\n"
         "- property_article must appear near artigo, matriz or inscrito wording.\n"
         "- property_section must appear near seccao/secção wording and be a short section code.\n"

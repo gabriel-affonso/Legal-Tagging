@@ -13,6 +13,9 @@ PENALTIES: dict[str, int] = {
     "invalid_property_article": 15, "invalid_iban": 25,
     "invalid_nif": 20, "invalid_or_multiple_owner_tax_id": 15,
     "invalid_monthly_rent": 15, "suspicious_lessee": 15,
+    "invalid_name": 20, "ocr_corrupted_party_name": 25,
+    "ocr_quality_low": 20,
+    "cross_field_conflict": 15,
     "unknown_validation_issue": 5,
 }
 QUALITY_BANDS: tuple[tuple[int, str], ...] = (
@@ -51,6 +54,16 @@ def get_penalty(issue: str) -> int:
         ("invalid_iban_", "invalid_iban"),
         ("invalid_owner_tax_id_", "invalid_nif"),
         ("invalid_monthly_rent_", "invalid_monthly_rent"),
+        ("invalid_lessor_", "invalid_name"),
+        ("invalid_lessee_", "invalid_name"),
+        ("invalid_owner_name_", "invalid_name"),
+        ("invalid_bank_account_holder_", "invalid_name"),
+        ("invalid_payer_", "invalid_name"),
+        ("invalid_payee_", "invalid_name"),
+        ("monthly_rent_conflicts_", "cross_field_conflict"),
+        ("property_article_conflicts_", "cross_field_conflict"),
+        ("property_section_conflicts_", "cross_field_conflict"),
+        ("suspicious_monthly_rent_for_contract_subtype", "cross_field_conflict"),
     )
     for prefix, family in mappings:
         if normalized.startswith(prefix):

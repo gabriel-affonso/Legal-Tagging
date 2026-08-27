@@ -12,6 +12,11 @@ FIELD_KEYWORDS = {
         "locatario", "locataria", "outorgante", "outorgantes", "gesto",
         "q energy", "utu energia",
     ),
+    "owner_name": (
+        "proprietario", "proprietária", "proprietário", "titular",
+        "titulares", "sujeito passivo", "owner", "nome", "identificacao",
+        "identificação",
+    ),
     "signed_date": (
         "assinado", "assinatura", "celebrado", "outorgado", "aos ",
         "dias do mes", "data",

@@ -75,6 +75,8 @@ class ExtractionResult:
     text_source: str = ""
     native_text_chars: str = ""
     ocr_text_chars: str = ""
+    ocr_quality_score: str = ""
+    ocr_quality_flags: str = ""
     quality_score: str = ""
     quality_band: str = ""
     validation_status: str = ""

@@ -49,6 +49,7 @@ def validate_proposal(
     field_validator = {
         "lessor": _validate_party,
         "lessee": _validate_party,
+        "owner_name": _validate_party,
         "signed_date": _validate_signed_date,
         "property_article": _validate_property_article,
         "property_section": _validate_property_section,

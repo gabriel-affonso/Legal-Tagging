@@ -24,9 +24,10 @@ O processamento é híbrido e conservador:
 7. Extração com schema específico por categoria.
 8. Sprint 1B: recuperação determinística de campos críticos quando houver evidência direta no texto.
 9. Sprint 1A: validação determinística, `quality_score`, prioridade e estado de validação.
-10. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com evidência curta e propostas validadas antes de alterar o registo.
-11. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-12. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+10. Step 2.2: robustez pré/pós-IA com recuperação determinística de IBAN, labels claros de proprietário/titular, validação de qualidade de nomes e score de OCR.
+11. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com evidência curta e propostas validadas antes de alterar o registo.
+12. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+13. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -166,6 +167,8 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `text_source`
 - `native_text_chars`
 - `ocr_text_chars`
+- `ocr_quality_score`
+- `ocr_quality_flags`
 - `ai_review_status`
 - `ai_reviewed_fields`
 - `ai_accepted_fields`
@@ -190,6 +193,17 @@ O relatório completo é gravado em `raw_json["ai_review"]`, e as colunas `ai_re
 A validação final depois do Step 2 é executada em modo puro, sem nova recuperação determinística. Isso evita que a etapa final altere campos novamente e garante que issues antigas, como `generic_lessor`, desapareçam quando já não forem produzidas pelas regras atuais.
 
 Estados técnicos são separados de revisão semântica: `NEEDS_OCR` indica ausência de texto utilizável, `OCR_FAILED` indica falha/indisponibilidade de OCR com texto insuficiente, `TECHNICAL_ERROR` indica erro de processamento e `NEEDS_HUMAN_REVIEW` indica proposta ou condição que precisa de decisão humana.
+
+## Step 2.2 Robustez
+
+O Step 2.2 reduz falsos positivos antes da IA e melhora a fila de revisão:
+
+- nomes em `lessor`, `lessee`, `owner_name`, `bank_account_holder`, `payer` e `payee` são avaliados por qualidade. Valores genéricos ou OCR corrompido geram issues como `invalid_lessor_format`, `invalid_owner_name_format` e `ocr_corrupted_party_name`.
+- IBAN/NIB são recuperados deterministicamente em janelas perto de `IBAN`/`NIB`, com correção OCR limitada (`O->0`, `I/l->1`, `S->5`, `B->8`, `Z->2`) e aceitação apenas quando o checksum é válido.
+- `owner_name` e `bank_account_holder` podem ser recuperados de labels claros como `Sujeito Passivo`, `Proprietário`, `Titular` e `Titular da conta`.
+- `owner_name` passou a ser elegível para o AI Reviewer quando estiver ausente, genérico ou inválido.
+- `ocr_quality_score` e `ocr_quality_flags` permitem ver rapidamente quando a causa da revisão é degradação OCR, e `ocr_quality_low` bloqueia autoaprovação.
+- regras de consistência detectam conflito entre `monthly_rent` e `purchase_price`/`option_price`/`assignment_price`, além de divergência entre artigo/secção extraídos e sinais determinísticos fortes.
 
 ## Tipologias Contratuais
 
@@ -232,8 +246,8 @@ As categorias oficiais são:
 ## Validações locais
 
 ```bash
-python3 -m py_compile src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/ai_reviewer/*.py
-PYTHONPATH=src python3 -m unittest tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
+python3 -m py_compile src/doc_register/processor.py src/doc_register/validators/validator.py src/doc_register/validators/name_quality.py src/doc_register/validators/iban_recovery.py src/doc_register/validators/field_recovery.py src/doc_register/validators/ocr_quality.py src/doc_register/ai_reviewer/*.py
+PYTHONPATH=src python3 -m unittest tests/test_step2_2.py tests/test_ai_reviewer.py tests/test_sprint1b.py tests/test_text_selection.py tests/test_ollama_client.py tests/test_detectors.py
 ```
 
 Smoke test opcional com Ollama local:

@@ -79,6 +79,8 @@ TECHNICAL_FIELDS = [
     "text_source",
     "native_text_chars",
     "ocr_text_chars",
+    "ocr_quality_score",
+    "ocr_quality_flags",
     "ai_review_status",
     "ai_reviewed_fields",
     "ai_accepted_fields",
