@@ -222,8 +222,24 @@ def validate_contract_amount_consistency(record: Any) -> list[str]:
             issues.append(f"monthly_rent_conflicts_with_{field}")
     return issues
 
+def validate_final_resolution_conflicts(record: Any) -> list[str]:
+    raw = record.get("raw_json", {}) if isinstance(record, dict) else getattr(record, "raw_json", {})
+    if not isinstance(raw, dict):
+        return []
+    resolution = raw.get("step2_7_final_resolution", {})
+    if not isinstance(resolution, dict):
+        return []
+    conflicts = resolution.get("conflicts", [])
+    if not isinstance(conflicts, list):
+        return []
+    return sorted({str(item.get("type") or "") for item in conflicts if isinstance(item, dict) and item.get("type")})
+
 def requires_monthly_rent(record: Any) -> bool:
     if _get(record, "document_category").lower() != "lease_contract":
+        return False
+    # Step 2.8 represents non-monthly rent explicitly.  An annual/per-hectare
+    # obligation is complete evidence of rent, not a missing monthly amount.
+    if _get(record, "rent_amount") and _get(record, "rent_frequency").lower() not in {"", "monthly"}:
         return False
     subtype_text = " ".join(
         _get(record, field)
@@ -256,6 +272,7 @@ VALIDATORS: tuple[ValidationFunction,...] = (
     validate_ocr_quality, validate_iban,
     validate_portuguese_tax_id, validate_known_lessee, validate_monthly_rent,
     validate_contract_prices, validate_contract_amount_consistency,
+    validate_final_resolution_conflicts,
     validate_party_role_conflicts, validate_property_identity_fields,
 )
 def run_all_validations(record: Any) -> list[str]:

@@ -21,6 +21,10 @@ from .validators.party_centric import (
     apply_party_centric_contract_extraction,
     prepare_party_centric_contract,
 )
+from .validators.contract_final_resolution import (
+    apply_contract_final_resolution,
+    prepare_contract_final_resolution,
+)
 from .validators.integration import recover_validate_result
 from .validators.validator import validate_result
 
@@ -151,12 +155,15 @@ class DocumentProcessor:
         # second prompt receives only field-authorized clauses, never a broad
         # document-wide semantic sample.
         party_centric_report = prepare_party_centric_contract(document_text)
+        final_resolution_report = prepare_contract_final_resolution(document_text)
 
         classification_text = select_classification_text(
             document_text,
             fallback_words=self.config.llm_classification_words,
         )
-        highlighted_text = party_centric_report.context_for_llm(
+        highlighted_text = final_resolution_report.context_for_llm(
+            max_chars=self.config.llm_extraction_max_chars,
+        ) or party_centric_report.context_for_llm(
             max_chars=self.config.llm_extraction_max_chars,
         ) or _build_extraction_context(
             document_text,
@@ -259,7 +266,11 @@ class DocumentProcessor:
             config=self.config,
             file_name=candidate.source_path.name,
             document_text=(
-                party_centric_report.context_for_llm(
+                final_resolution_report.context_for_llm(
+                    max_chars=self.config.ai_review_max_evidence_chars,
+                )
+                if final_resolution_report.active
+                else party_centric_report.context_for_llm(
                     max_chars=self.config.ai_review_max_evidence_chars,
                 )
                 if party_centric_report.active
@@ -271,6 +282,9 @@ class DocumentProcessor:
             result,
             party_centric_report,
         )
+        # Step 2.8 is the only final publisher for contract fields. It runs
+        # after deterministic recovery and AI review, avoiding last-write-wins.
+        result = apply_contract_final_resolution(result, final_resolution_report)
         result = validate_result(
             result,
             signals,
@@ -283,7 +297,9 @@ class DocumentProcessor:
             if hasattr(self.config, "critical_recovery_timeout_seconds")
             else 180,
             recover=False,
-            entity_resolution=True,
+            # Entity recovery already ran before the final resolver. Do not
+            # allow a later sanitiser to overwrite its selected candidates.
+            entity_resolution=False,
         )
         self.register.append(candidate, result)
         self._archive_candidate(candidate)

@@ -32,8 +32,11 @@ O processamento é híbrido e conservador:
 15. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
 16. Step 2.7: em contratos de arrendamento, a extração é orientada por estrutura. Primeiro identifica as partes e os blocos de imóvel/prazo/valores; depois o Ollama só recebe os contextos permitidos para cada campo. O parser de modelos empresariais reconhece marcadores como `doravante designados por Senhorios` e `designada por Arrendatária` antes da extração por IA.
 17. Step 2.7 aplica peso por página (1: 1,00; 2: 0,80; 3: 0,50; restantes: 0,20), prefere campos ausentes a inferências, bloqueia entidades de ruído conhecidas e grava a origem/evidência de cada campo em `raw_json["step2_7_party_centric"]`.
-18. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-19. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+18. Step 2.8: resolvedor final de contratos-container. Deteta zonas por página, mede qualidade OCR granular e reúne candidatos estruturados antes de publicar qualquer campo no Excel.
+19. A autoridade é específica por campo: caderneta/registo vencem para artigo, secção e localização; designação explícita vence para papéis contratuais; e fórmulas de assinatura vencem para datas. Conflitos entre titulares declarados e cadastrais são preservados e exigem revisão.
+20. A renda passa a suportar frequência e unidade. Renda anual por hectare preenche `rent_*` e `annual_rent`, sem inventar ou exigir `monthly_rent`.
+21. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+22. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -152,6 +155,8 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `property_parish`
 - `property_municipality`
 - `property_district`
+- `property_total_area`
+- `leased_parcel_area`
 - `property_location`
 - `property_address`
 - `owner_name`
@@ -161,6 +166,16 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `contract_end_date`
 - `rent_payment_day`
 - `monthly_rent`
+- `annual_rent`
+- `rent_amount`
+- `rent_currency`
+- `rent_frequency`
+- `rent_unit`
+- `rent_basis`
+- `rent_area_basis`
+- `rent_payment_timing`
+- `rent_adjustment_rule`
+- `rent_condition`
 - `currency`
 - `option_price`
 - `purchase_price`
@@ -245,6 +260,26 @@ O Step 2.5 melhora a entrada textual antes da classificação e extração. O ar
 Cada candidato recebe um score de qualidade com base em volume útil, linhas, páginas, sinais documentais e ruído. O OCR deixa de ganhar apenas por ter mais caracteres; ele precisa melhorar a qualidade do texto ou resolver ausência de texto nativo. Quando o texto layout-aware já tem qualidade suficiente, o OCR é evitado.
 
 As fontes possíveis em `text_source` incluem `native_pdf_text`, `native_pdf_pypdf_layout_text`, `native_pdf_layout_text`, `cached_ocr_pdf_text`, `cached_ocr_pdf_pypdf_layout_text` e `cached_ocr_pdf_layout_text`.
+
+## Step 2.8 Final Contract Resolution
+
+O Step 2.8 evita que a última recuperação executada determine o resultado. Para contratos de arrendamento, executa uma cadeia auditável: zonas documentais → qualidade por página → candidatos de partes/imóvel/renda/data → normalização e validação semântica → resolução de entidades e papéis → autoridade da fonte → conflitos → publicação final → recálculo da revisão.
+
+O relatório está em `raw_json["step2_7_final_resolution"]` por compatibilidade com o nome exigido no desenho anterior. Inclui zonas, qualidade, entidades, candidatos, decisões, conflitos e campos não resolvidos. `lessor` contém a lista canónica completa; `lessor_2` é apenas compatibilidade legada e nunca recebe uma entidade marcada como `lessee`.
+
+Hierarquia usada: para imóvel, caderneta predial > CRP > considerando > cláusula do objeto > filename; para partes, designação explícita > reconhecimento > assinatura > notificações > considerandos > filename. A pontuação combina autoridade específica do campo, confiança semântica e recuperabilidade da página; um candidato semanticamente inválido é bloqueado, mesmo que venha de uma página legível.
+
+Para executar apenas a regressão do Step 2.8:
+
+```bash
+PYTHONPATH=src python3 -m unittest tests.test_step2_8 -v
+```
+
+Para executar toda a suite:
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
 
 ## Step 2.6 Entity Resolution
 
