@@ -42,11 +42,14 @@ PROPERTY_REGISTER_COLUMNS = (
     "annex_text_chars",
     "llm_error",
     "evidence_model",
+    "property_catalog_status",
+    "property_catalog_text_source",
     "property_pack_status",
     "property_pack_match_score",
     "property_pack_match_method",
     "property_pack_candidate_count",
     "caderneta_source_file",
+    "crp_source_file",
     "audit",
 )
 
@@ -294,7 +297,8 @@ class PropertyExcelRegister:
             "pipeline_version": 16, "processed_at": 22, "source_file_name": 34, "source_file_path": 48,
             "sha256": 66, "property_name": 42, "reason": 28,
             "extraction_notes": 54, "llm_error": 48, "evidence_model": 80,
-            "property_pack_match_method": 34, "caderneta_source_file": 34, "audit": 80,
+            "property_catalog_text_source": 28, "property_pack_match_method": 34,
+            "caderneta_source_file": 34, "crp_source_file": 34, "audit": 80,
         }
         for index, header in enumerate(PROPERTY_REGISTER_COLUMNS, start=1):
             if header in widths:

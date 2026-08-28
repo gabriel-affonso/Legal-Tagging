@@ -151,6 +151,9 @@ O [Step 3.1](docs/step3.1.md) amplia essa recuperação para cadernetas que
 existem como PDFs separados na mesma pasta do contrato. Cada nova execução
 substitui o resultado anterior do mesmo PDF na aba `Property Extraction`.
 
+O [Step 3.1.1](docs/step3.1.1.md) reutiliza OCR para indexar cadernetas e
+CRPs escaneadas antes de tentar associá-las ao contrato.
+
 Configurações opcionais:
 
 - `property_extraction_dir`: diretório dos JSONs da pipeline secundária.

@@ -36,8 +36,11 @@ def load_tests(
         test_extracts_property_fields_from_considering_clause_a_without_llm,
         test_llm_only_receives_selected_clause_and_cannot_override_regex,
         test_invalid_article_and_section_have_zero_confidence,
+        test_annex_failure_preserves_invalid_field_audit_and_confidence,
         test_invalid_property_name_is_rejected_and_triggers_recovery,
         test_context_and_clause_selectors_apply_the_expected_boundaries,
+        test_property_catalogue_uses_cached_ocr_for_caderneta,
+        test_sp_sequence_chain_matches_unique_crp_and_caderneta,
         test_property_pack_matches_separate_caderneta_by_identifier,
         test_property_pack_rejects_ambiguous_candidates,
         test_discovers_and_parses_caderneta_in_document_tail,
@@ -152,6 +155,23 @@ def test_invalid_property_name_is_rejected_and_triggers_recovery() -> None:
     assert "invalid_property_name" in result.audit["validation_results"]
 
 
+def test_annex_failure_preserves_invalid_field_audit_and_confidence() -> None:
+    contract = PropertyExtractionPipeline().extract("""
+    CONTRATO DE ARRENDAMENTO
+    Senhorio, Arrendatário e renda mensal acordada.
+    Considerando que:
+    a) O prédio encontra-se inscrito na matriz sob o artigo ES, secção LX.
+    b) Cláusula seguinte.
+    """, allow_llm=False)
+
+    result = recover_from_annexes(contract, "")
+
+    assert result.confidence == 0
+    assert "invalid_matrix_article" in result.audit["validation_results"]
+    assert "invalid_matrix_section" in result.audit["validation_results"]
+    assert "caderneta_not_found" in result.audit["validation_results"]
+
+
 def test_context_and_clause_selectors_apply_the_expected_boundaries() -> None:
     text = "preâmbulo\nConsiderando que:\na) alvo\nb) fora do alvo"
     context, found_context = select_considering_context(text)
@@ -180,6 +200,7 @@ def test_property_pack_matches_separate_caderneta_by_identifier() -> None:
     discovery._descriptors = (PropertyDocumentDescriptor(
         path=Path("CadernetaPredial.pdf"),
         identifiers=frozenset({"269F"}),
+        kind="caderneta_predial",
         caderneta_values=caderneta,
     ),)
 
@@ -198,6 +219,7 @@ def test_property_pack_rejects_ambiguous_candidates() -> None:
         PropertyDocumentDescriptor(
             path=Path(f"Caderneta-{index}.pdf"),
             identifiers=frozenset({"269F"}),
+            kind="caderneta_predial",
             caderneta_values=caderneta,
         )
         for index in range(2)
@@ -210,6 +232,67 @@ def test_property_pack_rejects_ambiguous_candidates() -> None:
     match = discovery.find_for_contract(Path("VA553_269F_CA.pdf"), "", contract)
 
     assert match.status == "property_pack_ambiguous"
+
+
+def test_property_catalogue_uses_cached_ocr_for_caderneta() -> None:
+    caderneta_path = Path("CadernetaPredial-040812-R-140-J_SP18490.pdf")
+    caderneta_text = """
+    [Page 1] CADERNETA PREDIAL RÚSTICA
+    IDENTIFICAÇÃO DO PRÉDIO
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
+    ARTIGO MATRICIAL Nº: 269F
+    SECÇÃO: K
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 1,481200
+    TITULARES
+    """
+    discovery = PropertyPackDiscovery(
+        [caderneta_path],
+        text_loader=lambda path: (caderneta_text, "cached_ocr_pdf_layout_text"),
+    )
+    contract = PropertyExtractionPipeline().extract(
+        "Contrato de arrendamento entre Senhorio e Arrendatário, com renda.",
+        allow_llm=False,
+    )
+
+    match = discovery.find_for_contract(Path("VA553_269F_CA.pdf"), "", contract)
+
+    assert match.status == "property_pack_matched"
+    assert match.candidate_count == 1
+    assert match.catalog_status == "caderneta_catalogued"
+    assert match.catalog_text_source == "cached_ocr_pdf_layout_text"
+
+
+def test_sp_sequence_chain_matches_unique_crp_and_caderneta() -> None:
+    caderneta = CadernetaValues(matrix_article="140J", matrix_section="K").validated()
+    crp = CadernetaValues(matrix_article="140J", matrix_section="K").validated()
+    discovery = PropertyPackDiscovery([])
+    discovery._descriptors = (
+        PropertyDocumentDescriptor(
+            path=Path("CadernetaPredial_SP18490.pdf"),
+            identifiers=frozenset({"140J"}),
+            kind="caderneta_predial",
+            caderneta_values=caderneta,
+            sharepoint_sequence=18490,
+        ),
+        PropertyDocumentDescriptor(
+            path=Path("CRP_PR_140J_SP18491.pdf"),
+            identifiers=frozenset({"PR140J", "140J"}),
+            kind="crp",
+            crp_values=crp,
+            sharepoint_sequence=18491,
+        ),
+    )
+    contract = PropertyExtractionPipeline().extract(
+        "Contrato de arrendamento entre Senhorio e Arrendatário, com renda.",
+        allow_llm=False,
+    )
+
+    match = discovery.find_for_contract(Path("PR098_CA_SP18492.pdf"), "", contract)
+
+    assert match.status == "property_pack_matched"
+    assert match.methods[0] == "sp_sequence_chain"
+    assert match.crp_source_path == Path("CRP_PR_140J_SP18491.pdf")
 
 
 def test_discovers_and_parses_caderneta_in_document_tail() -> None:

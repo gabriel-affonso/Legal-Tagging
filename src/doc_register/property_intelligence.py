@@ -100,6 +100,7 @@ def reconcile_property(
     """Consolidate contract context and caderneta evidence without guessing."""
     contract_values = _values_from_result(contract)
     caderneta_values = caderneta.as_dict()
+    prior_validation = list(contract.audit.get("validation_results", []))
     validation: list[str] = []
     recovered_fields: list[str] = []
     evidence: dict[str, dict[str, Any]] = {}
@@ -154,14 +155,20 @@ def reconcile_property(
             evidence[field] = {"value": None, "source": None, "confidence": 0}
 
     confidence_before = contract.confidence
-    confidence_after = _confidence_v3(final, has_agreement=agreements > 0)
+    confidence_after = (
+        _confidence_v3(final, has_agreement=agreements > 0)
+        if recovered_fields or agreements
+        else contract.confidence
+    )
     audit = dict(contract.audit)
     audit.update({
         "contract_values": contract_values,
         "caderneta_values": caderneta_values,
         "caderneta_pages": [page.page_number for page in pages],
         "recovered_fields": recovered_fields,
-        "validation_results": validation or ["contract_and_caderneta_consistent"],
+        "validation_results": _unique_results(
+            prior_validation + validation + ([] if prior_validation or validation else ["contract_and_caderneta_consistent"])
+        ),
         "confidence_before_recovery": confidence_before,
         "confidence_after_recovery": confidence_after,
     })
@@ -184,14 +191,15 @@ def recover_from_annexes(contract: PropertyExtraction, annex_text: str) -> Prope
     pages = discover_caderneta_pages(annex_text)
     if not pages:
         audit = dict(contract.audit)
+        prior_validation = list(audit.get("validation_results", []))
         audit.update({
             "contract_values": _values_from_result(contract),
             "caderneta_values": {},
             "caderneta_pages": [],
             "recovered_fields": [],
-            "validation_results": ["caderneta_not_found"],
+            "validation_results": _unique_results(prior_validation + ["caderneta_not_found"]),
             "confidence_before_recovery": contract.confidence,
-            "confidence_after_recovery": _confidence_v3(_values_from_result(contract), has_agreement=False),
+            "confidence_after_recovery": contract.confidence,
         })
         return replace(contract, confidence=audit["confidence_after_recovery"], audit=audit)
     return reconcile_property(contract, parse_caderneta(pages), pages)
@@ -281,6 +289,10 @@ def _same_value(first: Any, second: Any) -> bool:
     if isinstance(first, str) or isinstance(second, str):
         return _fold(str(first)).replace(" ", "") == _fold(str(second)).replace(" ", "")
     return first == second
+
+
+def _unique_results(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
 
 
 def _valid_article(value: str) -> bool:

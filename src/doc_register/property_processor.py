@@ -34,7 +34,7 @@ class PropertyExtractionProcessor:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         existing_hashes = self.register.existing_hashes(PIPELINE_VERSION)
         pdf_files = self._iter_pdf_files()
-        pack_discovery = PropertyPackDiscovery(pdf_files)
+        pack_discovery = PropertyPackDiscovery(pdf_files, config=self.config)
         processed = 0
         for path in pdf_files:
             digest = _sha256(path)
@@ -175,15 +175,18 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "llm_error": result.get("llm_error", ""),
         "audit": result.get("audit", {}),
         "evidence_model": result.get("evidence_model", {}),
+        "property_catalog_status": _audit_value(result, "property_catalog_status"),
+        "property_catalog_text_source": _audit_value(result, "property_catalog_text_source"),
         "property_pack_status": _audit_value(result, "property_pack_status"),
         "property_pack_match_score": _audit_value(result, "property_pack_match_score"),
         "property_pack_match_method": _audit_value(result, "property_pack_match_method"),
         "property_pack_candidate_count": _audit_value(result, "property_pack_candidate_count"),
         "caderneta_source_file": _audit_value(result, "caderneta_source_file"),
+        "crp_source_file": _audit_value(result, "crp_source_file"),
     }
 
 
-PIPELINE_VERSION = "3.1"
+PIPELINE_VERSION = "3.1.1"
 
 
 def _with_property_pack_audit(result, match: PropertyPackMatch):
