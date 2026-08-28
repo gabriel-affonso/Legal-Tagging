@@ -30,8 +30,10 @@ O processamento é híbrido e conservador:
 13. Step 2.5: extração complementar ao OCR com preservação de layout, escolha por score entre texto nativo simples, texto nativo estruturado e OCR, e fallback conservador quando uma fonte não melhora a qualidade.
 14. Step 2.6: resolução de entidades de proprietário e terreno, com extração determinística de códigos `PR/VA`, bloqueio de valores genéricos e barreira de evidência para campos críticos.
 15. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
-16. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-17. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+16. Step 2.7: em contratos de arrendamento, a extração é orientada por estrutura. Primeiro identifica as partes e os blocos de imóvel/prazo/valores; depois o Ollama só recebe os contextos permitidos para cada campo. O parser de modelos empresariais reconhece marcadores como `doravante designados por Senhorios` e `designada por Arrendatária` antes da extração por IA.
+17. Step 2.7 aplica peso por página (1: 1,00; 2: 0,80; 3: 0,50; restantes: 0,20), prefere campos ausentes a inferências, bloqueia entidades de ruído conhecidas e grava a origem/evidência de cada campo em `raw_json["step2_7_party_centric"]`.
+18. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+19. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -139,7 +141,9 @@ Por padrão, o `watch` verifica a pasta a cada `poll_interval_seconds`.
 - `signed_date`
 - `contract_type`
 - `lessor`
+- `lessor_2`
 - `lessee`
+- `lessee_tax_id`
 - `property_name`
 - `property_number`
 - `property_display_name`

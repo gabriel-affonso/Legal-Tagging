@@ -17,6 +17,10 @@ from .registry import ExcelRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .ai_reviewer import review_if_needed
 from .validators.contract_clause_integration import apply_contract_clause_segmentation
+from .validators.party_centric import (
+    apply_party_centric_contract_extraction,
+    prepare_party_centric_contract,
+)
 from .validators.integration import recover_validate_result
 from .validators.validator import validate_result
 
@@ -143,12 +147,18 @@ class DocumentProcessor:
 
         document_text = _normalize_document_text(extracted_text.text)
         signals = detect_signals(candidate.source_path.name, document_text)
+        # Step 2.7 runs before the LLM extraction.  For lease candidates the
+        # second prompt receives only field-authorized clauses, never a broad
+        # document-wide semantic sample.
+        party_centric_report = prepare_party_centric_contract(document_text)
 
         classification_text = select_classification_text(
             document_text,
             fallback_words=self.config.llm_classification_words,
         )
-        highlighted_text = _build_extraction_context(
+        highlighted_text = party_centric_report.context_for_llm(
+            max_chars=self.config.llm_extraction_max_chars,
+        ) or _build_extraction_context(
             document_text,
             max_chars=self.config.llm_extraction_max_chars,
         )
@@ -230,11 +240,36 @@ class DocumentProcessor:
             signals=signals,
             document_text=document_text,
         )
+        result = apply_party_centric_contract_extraction(
+            result,
+            party_centric_report,
+        )
+        # Re-score after the structure gate so the AI reviewer sees the real
+        # missing fields instead of broad-context guesses that were removed.
+        result = validate_result(
+            result,
+            signals,
+            document_text,
+            file_name=candidate.source_path.name,
+            recover=False,
+            entity_resolution=False,
+        )
         result = review_if_needed(
             result,
             config=self.config,
             file_name=candidate.source_path.name,
-            document_text=document_text,
+            document_text=(
+                party_centric_report.context_for_llm(
+                    max_chars=self.config.ai_review_max_evidence_chars,
+                )
+                if party_centric_report.active
+                else document_text
+            ),
+        )
+        # Reviewer proposals remain subject to the same clause-origin gate.
+        result = apply_party_centric_contract_extraction(
+            result,
+            party_centric_report,
         )
         result = validate_result(
             result,

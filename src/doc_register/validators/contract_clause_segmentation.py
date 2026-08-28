@@ -7,10 +7,15 @@ import unicodedata
 
 CLAUSE_TYPES = {
     "title",
+    "preamble",
     "parties",
+    "parties_lessor",
+    "parties_lessee",
     "property",
+    "recital_property",
     "term",
     "rent",
+    "commercial",
     "payment",
     "deposit",
     "expenses",
@@ -79,7 +84,21 @@ class ContractClauseSegmentationReport:
 
     def clauses_of_type(self, *clause_types: str) -> list[ContractClause]:
         wanted = {clause_type for clause_type in clause_types if clause_type}
-        return [clause for clause in self.clauses if clause.clause_type in wanted]
+        output: list[ContractClause] = []
+        for clause in self.clauses:
+            if clause.clause_type in wanted:
+                output.append(clause)
+                continue
+            # Step 2.7 role/property names are query aliases, preserving the
+            # Step 2.4 public clause taxonomy and its existing audit reports.
+            normalized = _normalize(clause.text)
+            if clause.clause_type == "parties" and "parties_lessor" in wanted and re.search(r"\b(?:PRIMEIR[OA]\s+OUTORGANTE|SENHORIOS?|PROPRIET[AÁ]RIOS?)\b", normalized):
+                output.append(clause)
+            elif clause.clause_type == "parties" and "parties_lessee" in wanted and re.search(r"\b(?:SEGUND[OA]\s+OUTORGANTE|ARRENDAT[AÁ]RI[OA]S?|LESSEE|TENANT)\b", normalized):
+                output.append(clause)
+            elif clause.clause_type == "property" and "recital_property" in wanted:
+                output.append(clause)
+        return output
 
     def text_for_types(self, *clause_types: str, max_chars: int = 8000) -> str:
         chunks = [clause.text.strip() for clause in self.clauses_of_type(*clause_types)]
@@ -227,6 +246,8 @@ def _classify_clause(title: str, text: str, hint: str = "other") -> tuple[str, s
             return clause_type, f"text_{label}"
     if hint in CLAUSE_TYPES:
         return hint, "semantic_boundary"
+    if hint == "other" and not title and len(combined) > 30:
+        return "preamble", "fallback_preamble"
     return "other", "fallback"
 
 
@@ -242,6 +263,7 @@ def _classification_rules() -> tuple[tuple[str, str, tuple[str, ...]], ...]:
         ("property", "property", ("IMOVEL", "PREDIO", "FRACAO", "MATRIZ", "ARTIGO MATRICIAL", "LOCAL ARRENDADO")),
         ("term", "term", ("PRAZO", "DURACAO", "VIGENCIA", "INICIO", "TERMO", "RENOVACAO")),
         ("rent", "rent", ("RENDA", "RENDA MENSAL", "MENSALIDADE", "VALOR DA RENDA")),
+        ("commercial", "commercial", ("OPCAO DE COMPRA", "PRECO DE COMPRA", "COMPRA E VENDA", "CESSAO", "CEDENCIA")),
         ("payment", "payment", ("PAGAMENTO", "TRANSFERENCIA", "IBAN", "NIB", "VENCIMENTO", "ATE AO DIA")),
         ("deposit", "deposit", ("CAUCAO", "DEPOSITO", "GARANTIA")),
         ("expenses", "expenses", ("DESPESAS", "ENCARGOS", "CONDOMINIO", "IMI", "AGUA", "ELETRICIDADE", "LUZ")),
