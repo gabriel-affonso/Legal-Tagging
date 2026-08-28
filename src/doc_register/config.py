@@ -37,6 +37,9 @@ class AppConfig:
     ai_review_human_confidence: float = 0.70
     contract_clause_segmentation_enabled: bool = True
     contract_clause_segmentation_max_clause_chars: int = 1200
+    property_extraction_dir: Path | None = None
+    property_llm_enabled: bool = True
+    property_llm_timeout_seconds: int = 180
 
     @classmethod
     def from_json(cls, path: Path) -> "AppConfig":
@@ -89,6 +92,13 @@ class AppConfig:
             contract_clause_segmentation_max_clause_chars=int(
                 raw.get("contract_clause_segmentation_max_clause_chars", 1200)
             ),
+            property_extraction_dir=as_path(
+                "property_extraction_dir", "property_extractions"
+            ),
+            property_llm_enabled=_as_bool(raw.get("property_llm_enabled", True)),
+            property_llm_timeout_seconds=int(
+                raw.get("property_llm_timeout_seconds", 180)
+            ),
         )
 
     def ensure_directories(self) -> None:
@@ -100,6 +110,8 @@ class AppConfig:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.ocr_dir.mkdir(parents=True, exist_ok=True)
         self.excel_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.property_extraction_dir:
+            self.property_extraction_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _as_bool(value: object) -> bool:

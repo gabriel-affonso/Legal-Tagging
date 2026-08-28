@@ -8,6 +8,7 @@ import time
 
 from .config import AppConfig
 from .processor import DocumentProcessor
+from .property_processor import PropertyExtractionProcessor
 
 
 def _configure_logging(log_dir: Path, log_level: str) -> None:
@@ -33,7 +34,11 @@ def _configure_logging(log_dir: Path, log_level: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local PDF document register powered by Ollama.")
-    parser.add_argument("command", choices=["scan", "watch"], help="Run once or keep polling the input folder.")
+    parser.add_argument(
+        "command",
+        choices=["scan", "watch", "property-scan", "property-watch"],
+        help="Run the main register or the independent property extraction pipeline.",
+    )
     parser.add_argument("--config", default="config.json", help="Path to configuration JSON.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
@@ -41,6 +46,23 @@ def main() -> None:
     config = AppConfig.from_json(Path(args.config).expanduser().resolve())
     _configure_logging(config.log_dir, args.log_level)
     config.ensure_directories()
+    if args.command in {"property-scan", "property-watch"}:
+        processor = PropertyExtractionProcessor(config)
+        if args.command == "property-scan":
+            processed = processor.scan_once()
+            logging.info("Property scan complete. Processed %s new PDF(s).", processed)
+            return
+
+        logging.info(
+            "Watching %s for independent property extraction every %s seconds.",
+            config.input_dir,
+            config.poll_interval_seconds,
+        )
+        while True:
+            processed = processor.scan_once()
+            logging.info("Property watch cycle complete. Processed %s new PDF(s).", processed)
+            time.sleep(config.poll_interval_seconds)
+
     processor = DocumentProcessor(config)
 
     if args.command == "scan":

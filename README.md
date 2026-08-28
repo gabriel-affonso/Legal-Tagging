@@ -109,6 +109,29 @@ source .venv/bin/activate
 doc-register scan --config config.json
 ```
 
+## Pipeline secundária de propriedades
+
+Para extrair apenas `property_name`, `matrix_article`, `matrix_section` e
+`area_m2` de contratos de arrendamento, execute a pipeline independente:
+
+```bash
+source .venv/bin/activate
+doc-register property-scan --config config.json
+```
+
+Ela grava um JSON por PDF em `property_extractions/` (ou no caminho definido
+por `property_extraction_dir`) e não altera o Excel, o arquivo ou o estado da
+pipeline principal. Primeiro calcula o score de arrendamento; documentos que
+não atingirem o limiar recebem `status: "skipped"` e `reason:
+"not_lease_contract"`. O Ollama local só recebe a alínea `a)` do bloco
+`Considerando que`, quando a extração por regras não alcançar 90 de confiança.
+
+Configurações opcionais:
+
+- `property_extraction_dir`: diretório dos JSONs da pipeline secundária.
+- `property_llm_enabled`: desativa a recuperação dirigida por Ollama quando `false`.
+- `property_llm_timeout_seconds`: limite da chamada dirigida ao Ollama (180 por padrão).
+
 ## Deixar monitorando
 
 ```bash

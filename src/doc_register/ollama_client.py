@@ -105,6 +105,28 @@ Highlighted relevant excerpts:
 {highlighted_text}
 """
 
+
+PROPERTY_EXTRACTION_PROMPT_TEMPLATE = """Extract property data from this single
+lease-contract clause. Return JSON only.
+
+Rules:
+1. Use only information explicitly present in the clause.
+2. Do not infer, correct, or invent any value.
+3. Return an empty string when a value does not exist.
+4. area_m2 must contain only the numeric value in square metres, without a unit.
+
+Required JSON object:
+{
+  "property_name": "",
+  "matrix_article": "",
+  "matrix_section": "",
+  "area_m2": ""
+}
+
+Lease-contract clause:
+{clause_text}
+"""
+
 CATEGORY_PROMPT_TREE = {
     "lease_contract": (
         "Large type: real-estate contractual document.\n"
@@ -319,6 +341,31 @@ def extract_metadata_with_ollama(
         # extraction_notes belongs to classification, so preserve the warning in logs;
         # review rules can later use schema diagnostics if added to the data model.
     return normalized
+
+
+def extract_property_with_ollama(
+    base_url: str,
+    model: str,
+    clause_text: str,
+    *,
+    timeout_seconds: int = 180,
+) -> dict[str, Any]:
+    """Recover only property fields from a short, already-selected clause."""
+    schema = {
+        "property_name": "",
+        "matrix_article": "",
+        "matrix_section": "",
+        "area_m2": "",
+    }
+    response = _chat_json(
+        base_url,
+        model,
+        PROPERTY_EXTRACTION_PROMPT_TEMPLATE.format(clause_text=clause_text),
+        timeout_seconds=timeout_seconds,
+        output_schema=_json_schema_for_fields(schema),
+        num_predict=180,
+    )
+    return {field: response.get(field, "") for field in schema}
 
 
 def _chat_json(

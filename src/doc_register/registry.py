@@ -3,11 +3,44 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from contextlib import contextmanager
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
 
 from .models import ExtractionResult, PdfCandidate, REGISTER_COLUMNS
 
 
 SHEET_NAME = "Document Register"
+PROPERTY_SHEET_NAME = "Property Extraction"
+
+PROPERTY_REGISTER_COLUMNS = (
+    "processed_at",
+    "source_file_name",
+    "source_file_path",
+    "sha256",
+    "status",
+    "reason",
+    "document_type",
+    "property_name",
+    "matrix_article",
+    "matrix_section",
+    "area_m2",
+    "confidence",
+    "lease_score",
+    "candidate_score",
+    "used_llm",
+    "source_section",
+    "source_clause",
+    "text_source",
+    "native_text_chars",
+    "ocr_text_chars",
+    "extraction_notes",
+    "llm_error",
+    "audit",
+)
 
 
 class ExcelRegister:
@@ -15,51 +48,53 @@ class ExcelRegister:
         self.path = path
 
     def existing_hashes(self) -> set[str]:
-        workbook, sheet = self._load()
-        sha_col = REGISTER_COLUMNS.index("sha256") + 1
-        values: set[str] = set()
-        for row in range(2, sheet.max_row + 1):
-            value = sheet.cell(row=row, column=sha_col).value
-            if value:
-                values.add(str(value))
-        workbook.close()
-        return values
+        with _workbook_lock(self.path):
+            workbook, sheet = self._load()
+            sha_col = REGISTER_COLUMNS.index("sha256") + 1
+            values: set[str] = set()
+            for row in range(2, sheet.max_row + 1):
+                value = sheet.cell(row=row, column=sha_col).value
+                if value:
+                    values.add(str(value))
+            workbook.close()
+            return values
 
     def append(self, candidate: PdfCandidate, result: ExtractionResult) -> None:
-        workbook, sheet = self._load()
-        operational = {
-            "processed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            "source_file_name": candidate.source_path.name,
-            "copied_file_path": str(candidate.copied_path),
-            "sha256": candidate.sha256,
-            "file_created_at": candidate.created_at.isoformat(),
-            "file_modified_at": candidate.modified_at.isoformat(),
-        }
-        row = []
-        for column in REGISTER_COLUMNS:
-            value = operational.get(column, getattr(result, column, ""))
-            if isinstance(value, (dict, list)):
-                value = json.dumps(value, ensure_ascii=False)
-            row.append(value)
-        sheet.append(row)
-        self._format(sheet)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        workbook.save(self.path)
-        workbook.close()
+        with _workbook_lock(self.path):
+            workbook, sheet = self._load()
+            operational = {
+                "processed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "source_file_name": candidate.source_path.name,
+                "copied_file_path": str(candidate.copied_path),
+                "sha256": candidate.sha256,
+                "file_created_at": candidate.created_at.isoformat(),
+                "file_modified_at": candidate.modified_at.isoformat(),
+            }
+            row = []
+            for column in REGISTER_COLUMNS:
+                value = operational.get(column, getattr(result, column, ""))
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, ensure_ascii=False)
+                row.append(value)
+            sheet.append(row)
+            self._format(sheet)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(self.path)
+            workbook.close()
 
     def _load(self):
         try:
             from openpyxl import Workbook, load_workbook
-            from openpyxl.worksheet.table import Table, TableStyleInfo
         except ImportError as exc:
             raise RuntimeError("Missing dependency: install openpyxl with `pip install -r requirements.txt`.") from exc
 
         if self.path.exists():
             workbook = load_workbook(self.path)
-            sheet = workbook[SHEET_NAME] if SHEET_NAME in workbook.sheetnames else workbook.active
-            if sheet.title != SHEET_NAME:
-                sheet.title = SHEET_NAME
+            sheet = workbook[SHEET_NAME] if SHEET_NAME in workbook.sheetnames else workbook.create_sheet(SHEET_NAME, 0)
             migrated = _ensure_headers(sheet)
+            if not sheet.tables:
+                _add_table(sheet, "DocumentRegister", len(REGISTER_COLUMNS))
+                migrated = True
             if migrated:
                 self._format(sheet)
                 workbook.save(self.path)
@@ -69,17 +104,7 @@ class ExcelRegister:
         sheet = workbook.active
         sheet.title = SHEET_NAME
         sheet.append(REGISTER_COLUMNS)
-        last_column = _column_letter(len(REGISTER_COLUMNS))
-        table = Table(displayName="DocumentRegister", ref=f"A1:{last_column}1")
-        style = TableStyleInfo(
-            name="TableStyleMedium2",
-            showFirstColumn=False,
-            showLastColumn=False,
-            showRowStripes=True,
-            showColumnStripes=False,
-        )
-        table.tableStyleInfo = style
-        sheet.add_table(table)
+        _add_table(sheet, "DocumentRegister", len(REGISTER_COLUMNS))
         self._format(sheet)
         return workbook, sheet
 
@@ -167,3 +192,106 @@ def _column_letter(index: int) -> str:
         index, remainder = divmod(index - 1, 26)
         letters = chr(65 + remainder) + letters
     return letters
+
+
+class PropertyExcelRegister:
+    """Dedicated worksheet for the focused property-extraction pipeline."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def existing_hashes(self) -> set[str]:
+        with _workbook_lock(self.path):
+            workbook, sheet = self._load()
+            sha_col = PROPERTY_REGISTER_COLUMNS.index("sha256") + 1
+            values = {
+                str(sheet.cell(row=row, column=sha_col).value)
+                for row in range(2, sheet.max_row + 1)
+                if sheet.cell(row=row, column=sha_col).value
+            }
+            workbook.close()
+            return values
+
+    def append(self, payload: dict[str, object]) -> None:
+        with _workbook_lock(self.path):
+            workbook, sheet = self._load()
+            sheet.append([
+                _excel_value(payload.get(column, ""))
+                for column in PROPERTY_REGISTER_COLUMNS
+            ])
+            self._format(sheet)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(self.path)
+            workbook.close()
+
+    def _load(self):
+        try:
+            from openpyxl import Workbook, load_workbook
+            from openpyxl.worksheet.table import Table, TableStyleInfo
+        except ImportError as exc:
+            raise RuntimeError("Missing dependency: install openpyxl with `pip install -r requirements.txt`.") from exc
+
+        if self.path.exists():
+            workbook = load_workbook(self.path)
+            if PROPERTY_SHEET_NAME in workbook.sheetnames:
+                sheet = workbook[PROPERTY_SHEET_NAME]
+            else:
+                sheet = workbook.create_sheet(PROPERTY_SHEET_NAME)
+                sheet.append(PROPERTY_REGISTER_COLUMNS)
+                _add_table(sheet, "PropertyExtraction", len(PROPERTY_REGISTER_COLUMNS))
+            return workbook, sheet
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = PROPERTY_SHEET_NAME
+        sheet.append(PROPERTY_REGISTER_COLUMNS)
+        _add_table(sheet, "PropertyExtraction", len(PROPERTY_REGISTER_COLUMNS))
+        self._format(sheet)
+        return workbook, sheet
+
+    def _format(self, sheet) -> None:
+        sheet.freeze_panes = "A2"
+        widths = {
+            "processed_at": 22, "source_file_name": 34, "source_file_path": 48,
+            "sha256": 66, "property_name": 42, "reason": 28,
+            "extraction_notes": 54, "llm_error": 48, "audit": 80,
+        }
+        for index, header in enumerate(PROPERTY_REGISTER_COLUMNS, start=1):
+            if header in widths:
+                sheet.column_dimensions[_column_letter(index)].width = widths[header]
+        if sheet.tables:
+            table = next(iter(sheet.tables.values()))
+            table.ref = f"A1:{_column_letter(len(PROPERTY_REGISTER_COLUMNS))}{max(sheet.max_row, 1)}"
+
+
+def _excel_value(value: object) -> object:
+    return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+
+
+def _add_table(sheet, name: str, column_count: int) -> None:
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    table = Table(displayName=name, ref=f"A1:{_column_letter(column_count)}1")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    sheet.add_table(table)
+
+
+@contextmanager
+def _workbook_lock(path: Path):
+    """Serialize local workbook writes when both pipelines run together."""
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as handle:
+        if fcntl:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+
+from doc_register.models import ExtractionResult, PdfCandidate
+from doc_register.property_pipeline import (
+    PropertyExtractionPipeline,
+    detect_lease_contract,
+    select_clause_a,
+    select_considering_context,
+)
+from doc_register.registry import ExcelRegister, PROPERTY_SHEET_NAME, PropertyExcelRegister
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str,
+) -> unittest.TestSuite:
+    functions = (
+        test_skips_documents_that_do_not_reach_lease_threshold,
+        test_fast_lease_detection_uses_weighted_indicators,
+        test_extracts_property_fields_from_considering_clause_a_without_llm,
+        test_llm_only_receives_selected_clause_and_cannot_override_regex,
+        test_context_and_clause_selectors_apply_the_expected_boundaries,
+        test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook,
+    )
+    return unittest.TestSuite(unittest.FunctionTestCase(function) for function in functions)
+
+
+def test_skips_documents_that_do_not_reach_lease_threshold() -> None:
+    result = PropertyExtractionPipeline().extract(
+        "Caderneta predial: artigo 123, secção K, área de 45.230 m2."
+    )
+
+    assert result.status == "skipped"
+    assert result.reason == "not_lease_contract"
+    assert result.used_llm is False
+
+
+def test_fast_lease_detection_uses_weighted_indicators() -> None:
+    detected = detect_lease_contract(
+        "O Senhorio entrega ao Arrendatário o imóvel mediante renda anual."
+    )
+
+    assert detected.score == 60
+    assert detected.is_lease_contract is True
+
+
+def test_extracts_property_fields_from_considering_clause_a_without_llm() -> None:
+    text = """
+    CONTRATO DE ARRENDAMENTO RURAL
+    Entre o Senhorio e o Arrendatário, mediante renda anual.
+    Considerando que:
+    a) O prédio rústico denominado por Quinta da Ribeira, composto por cultura
+    arvense, encontra-se inscrito na matriz sob o artigo 123, secção K, com área
+    de 45.230 m².
+    b) O imóvel será entregue livre de pessoas e bens.
+    """
+
+    result = PropertyExtractionPipeline().extract(text)
+
+    assert result.status == "processed"
+    assert result.property_name == "Quinta da Ribeira"
+    assert result.matrix_article == "123"
+    assert result.matrix_section == "K"
+    assert result.area_m2 == 45230
+    assert result.confidence == 100
+    assert result.source_section == "Considerando que"
+    assert result.source_clause == "a)"
+    assert result.used_llm is False
+
+
+def test_llm_only_receives_selected_clause_and_cannot_override_regex() -> None:
+    seen: list[str] = []
+
+    def recover(clause: str) -> dict[str, str]:
+        seen.append(clause)
+        return {
+            "property_name": "Nome Inventado",
+            "matrix_article": "999",
+            "matrix_section": "K",
+            "area_m2": "100",
+        }
+
+    text = """
+    CONTRATO DE ARRENDAMENTO
+    Senhorio, Arrendatário e renda mensal acordada.
+    Considerando que:
+    a) O prédio rústico denominado por Quinta da Ribeira, composto por olival,
+    encontra-se inscrito na matriz sob o artigo 123, secção K.
+    b) Cláusula seguinte.
+    """
+    result = PropertyExtractionPipeline(recover).extract(text)
+
+    assert result.used_llm is True
+    assert "a)" in seen[0]
+    assert "b)" not in seen[0]
+    assert result.property_name == "Quinta da Ribeira"
+    assert result.matrix_article == "123"
+    assert result.matrix_section == "K"
+    assert result.area_m2 is None
+    assert result.confidence == 75
+
+
+def test_context_and_clause_selectors_apply_the_expected_boundaries() -> None:
+    text = "preâmbulo\nConsiderando que:\na) alvo\nb) fora do alvo"
+    context, found_context = select_considering_context(text)
+    clause, found_clause = select_clause_a(context)
+
+    assert found_context is True
+    assert found_clause is True
+    assert clause == "a) alvo"
+
+
+def test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook() -> None:
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        raise unittest.SkipTest("openpyxl is not installed in this environment")
+
+    with TemporaryDirectory() as directory:
+        workbook_path = Path(directory) / "document_register.xlsx"
+        property_register = PropertyExcelRegister(workbook_path)
+        property_register.append({
+            "processed_at": "2026-08-28T00:00:00+00:00",
+            "source_file_name": "lease.pdf",
+            "sha256": "property-hash",
+            "status": "processed",
+            "property_name": "Quinta da Ribeira",
+            "area_m2": 45230,
+        })
+
+        candidate = PdfCandidate(
+            source_path=Path(directory) / "main.pdf",
+            copied_path=Path(directory) / "main.pdf",
+            sha256="main-hash",
+            created_at=datetime.now(timezone.utc),
+            modified_at=datetime.now(timezone.utc),
+        )
+        ExcelRegister(workbook_path).append(candidate, ExtractionResult())
+
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(workbook_path)
+        assert PROPERTY_SHEET_NAME in workbook.sheetnames
+        assert "Document Register" in workbook.sheetnames
+        sheet = workbook[PROPERTY_SHEET_NAME]
+        assert sheet.cell(row=2, column=2).value == "lease.pdf"
+        assert property_register.existing_hashes() == {"property-hash"}
+        workbook.close()
