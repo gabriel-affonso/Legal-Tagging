@@ -12,7 +12,13 @@ from pathlib import Path
 from .config import AppConfig
 from .ollama_client import extract_property_with_ollama
 from .pdf_text import extract_pdf_annex_text, extract_text_with_optional_ocr
-from .property_intelligence import reconcile_property, recover_from_annexes, recovery_required
+from .property_intelligence import (
+    discover_caderneta_pages,
+    parse_caderneta,
+    reconcile_property,
+    recover_from_annexes,
+    recovery_required,
+)
 from .property_pack import PropertyPackDiscovery, PropertyPackMatch
 from .property_pipeline import PropertyExtractionPipeline
 from .registry import PropertyExcelRegister
@@ -60,23 +66,23 @@ class PropertyExtractionProcessor:
                     allow_llm=False,
                 )
                 annex_text = ""
-                if result.status == "processed" and recovery_required(result):
+                if result.status == "processed":
                     pack_match = pack_discovery.find_for_contract(path, extracted.text, result)
                     result = _with_property_pack_audit(result, pack_match)
-                    if pack_match.caderneta_values:
-                        result = reconcile_property(result, pack_match.caderneta_values, [])
-                    if recovery_required(result):
-                        annex_text = extract_pdf_annex_text(path)
-                        result = recover_from_annexes(result, annex_text)
+                    annex_text = _read_annex_text(path, self.config)
+                    annex_pages = discover_caderneta_pages(annex_text)
+                    result = _reconcile_property_evidence(result, pack_match, annex_pages, path.name)
+                    if not pack_match.caderneta_values and not annex_pages:
+                        result = recover_from_annexes(result, "")
                     if recovery_required(result) and self.config.property_llm_enabled:
                         llm_result = PropertyExtractionPipeline(self._llm_extractor()).extract(
                             extracted.text,
                             allow_llm=True,
                         )
                         llm_result = _with_property_pack_audit(llm_result, pack_match)
-                        if pack_match.caderneta_values:
-                            llm_result = reconcile_property(llm_result, pack_match.caderneta_values, [])
-                        result = recover_from_annexes(llm_result, annex_text)
+                        result = _reconcile_property_evidence(llm_result, pack_match, annex_pages, path.name)
+                        if not pack_match.caderneta_values and not annex_pages:
+                            result = recover_from_annexes(result, "")
                 if result.status == "processed" and recovery_required(result):
                     result = replace(
                         result,
@@ -183,16 +189,42 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "property_pack_candidate_count": _audit_value(result, "property_pack_candidate_count"),
         "caderneta_source_file": _audit_value(result, "caderneta_source_file"),
         "crp_source_file": _audit_value(result, "crp_source_file"),
+        "caderneta_evidence_sources": _audit_value(result, "caderneta_evidence_sources"),
+        "caderneta_same_pdf_found": _audit_value(result, "caderneta_same_pdf_found"),
     }
 
 
-PIPELINE_VERSION = "3.1.1"
+PIPELINE_VERSION = "3.1.2"
 
 
 def _with_property_pack_audit(result, match: PropertyPackMatch):
     audit = dict(result.audit)
     audit.update(match.audit())
     return replace(result, audit=audit)
+
+
+def _reconcile_property_evidence(result, match: PropertyPackMatch, annex_pages, contract_file_name: str):
+    sources: list[str] = []
+    if match.caderneta_values:
+        result = reconcile_property(result, match.caderneta_values, [])
+        if match.source_path:
+            sources.append(match.source_path.name)
+    if annex_pages:
+        result = reconcile_property(result, parse_caderneta(annex_pages), annex_pages)
+        sources.append(contract_file_name)
+    if sources:
+        audit = dict(result.audit)
+        audit["caderneta_evidence_sources"] = sources
+        audit["caderneta_same_pdf_found"] = bool(annex_pages)
+        result = replace(result, audit=audit)
+    return result
+
+
+def _read_annex_text(path: Path, config: AppConfig) -> str:
+    """Read the document tail from its OCR PDF when available."""
+    cached_ocr = config.ocr_dir / f"{path.stem}__ocr.pdf"
+    source = cached_ocr if cached_ocr.is_file() else path
+    return extract_pdf_annex_text(source)
 
 
 def _audit_value(result: dict[str, object], key: str) -> object:

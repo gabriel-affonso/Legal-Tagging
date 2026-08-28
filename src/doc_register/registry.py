@@ -50,6 +50,8 @@ PROPERTY_REGISTER_COLUMNS = (
     "property_pack_candidate_count",
     "caderneta_source_file",
     "crp_source_file",
+    "caderneta_evidence_sources",
+    "caderneta_same_pdf_found",
     "audit",
 )
 
@@ -298,7 +300,8 @@ class PropertyExcelRegister:
             "sha256": 66, "property_name": 42, "reason": 28,
             "extraction_notes": 54, "llm_error": 48, "evidence_model": 80,
             "property_catalog_text_source": 28, "property_pack_match_method": 34,
-            "caderneta_source_file": 34, "crp_source_file": 34, "audit": 80,
+            "caderneta_source_file": 34, "crp_source_file": 34,
+            "caderneta_evidence_sources": 46, "audit": 80,
         }
         for index, header in enumerate(PROPERTY_REGISTER_COLUMNS, start=1):
             if header in widths:

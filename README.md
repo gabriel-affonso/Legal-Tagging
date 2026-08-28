@@ -154,6 +154,9 @@ substitui o resultado anterior do mesmo PDF na aba `Property Extraction`.
 O [Step 3.1.1](docs/step3.1.1.md) reutiliza OCR para indexar cadernetas e
 CRPs escaneadas antes de tentar associá-las ao contrato.
 
+O [Step 3.1.2](docs/step3.1.2.md) reconcilia conjuntamente o contrato com
+cadernetas separadas e com cadernetas presentes no final do próprio PDF.
+
 Configurações opcionais:
 
 - `property_extraction_dir`: diretório dos JSONs da pipeline secundária.

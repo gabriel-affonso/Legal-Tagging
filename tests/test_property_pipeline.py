@@ -21,7 +21,9 @@ from doc_register.property_intelligence import (
 from doc_register.property_pack import (
     PropertyDocumentDescriptor,
     PropertyPackDiscovery,
+    PropertyPackMatch,
 )
+from doc_register.property_processor import _reconcile_property_evidence
 from doc_register.registry import ExcelRegister, PROPERTY_SHEET_NAME, PropertyExcelRegister
 
 
@@ -41,6 +43,8 @@ def load_tests(
         test_context_and_clause_selectors_apply_the_expected_boundaries,
         test_property_catalogue_uses_cached_ocr_for_caderneta,
         test_sp_sequence_chain_matches_unique_crp_and_caderneta,
+        test_sp_sequence_chain_uses_crp_filename_when_ocr_is_weak,
+        test_same_pdf_caderneta_is_reconciled_with_contract,
         test_property_pack_matches_separate_caderneta_by_identifier,
         test_property_pack_rejects_ambiguous_candidates,
         test_discovers_and_parses_caderneta_in_document_tail,
@@ -293,6 +297,70 @@ def test_sp_sequence_chain_matches_unique_crp_and_caderneta() -> None:
     assert match.status == "property_pack_matched"
     assert match.methods[0] == "sp_sequence_chain"
     assert match.crp_source_path == Path("CRP_PR_140J_SP18491.pdf")
+
+
+def test_sp_sequence_chain_uses_crp_filename_when_ocr_is_weak() -> None:
+    caderneta_path = Path("CadernetaPredial-040812-R-140-J_SP18490.pdf")
+    crp_path = Path("CRP_PR_140J_SP18491.pdf")
+    caderneta_text = """
+    CADERNETA PREDIAL RÚSTICA
+    IDENTIFICAÇÃO DO PRÉDIO
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
+    ARTIGO MATRICIAL Nº: 140-J
+    SECÇÃO: K
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 1,000000
+    TITULARES
+    """
+    discovery = PropertyPackDiscovery(
+        [caderneta_path, crp_path],
+        text_loader=lambda path: (
+            caderneta_text if path == caderneta_path else "OCR muito curto e sem marcadores úteis.",
+            "cached_ocr_pdf_layout_text",
+        ),
+    )
+    contract = PropertyExtractionPipeline().extract(
+        "Contrato de arrendamento entre Senhorio e Arrendatário, com renda.",
+        allow_llm=False,
+    )
+
+    match = discovery.find_for_contract(Path("PR098_CA_SP18492.pdf"), "", contract)
+
+    assert match.status == "property_pack_matched"
+    assert match.methods[0] == "sp_sequence_chain"
+    assert match.caderneta_values.matrix_article == "140-J"
+
+
+def test_same_pdf_caderneta_is_reconciled_with_contract() -> None:
+    contract = PropertyExtractionPipeline().extract("""
+    CONTRATO DE ARRENDAMENTO
+    Senhorio, Arrendatário e renda mensal acordada.
+    Considerando que:
+    a) O prédio rústico encontra-se inscrito na matriz sob o artigo 123, secção K.
+    b) Cláusula seguinte.
+    """, allow_llm=False)
+    annex = """
+    [Page 11] CADERNETA PREDIAL RÚSTICA
+    IDENTIFICAÇÃO DO PRÉDIO
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
+    ARTIGO MATRICIAL Nº: 123
+    SECÇÃO: K
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 1,481200
+    TITULARES
+    """
+
+    result = _reconcile_property_evidence(
+        contract,
+        PropertyPackMatch(status="property_pack_not_found"),
+        discover_caderneta_pages(annex),
+        "Contrato.pdf",
+    )
+
+    assert result.property_name == "Quinta da Ribeira"
+    assert result.area_m2 == 14812
+    assert result.audit["caderneta_same_pdf_found"] is True
+    assert result.audit["caderneta_evidence_sources"] == ["Contrato.pdf"]
 
 
 def test_discovers_and_parses_caderneta_in_document_tail() -> None:

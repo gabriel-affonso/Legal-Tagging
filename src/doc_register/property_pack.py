@@ -265,11 +265,13 @@ def _match_score(
 
 def _parse_crp(file_name: str, text: str) -> CadernetaValues | None:
     normalized = _fold(text)
-    if not re.search(
+    filename_is_crp = bool(re.search(r"(?:^|[_\-\s])CRP(?:[_\-\s]|$)", file_name, re.IGNORECASE))
+    text_is_crp = bool(re.search(
         r"\b(?:certidao\s+permanente|conservatoria|descricao\s+predial|registo\s+predial|crp)\b",
         normalized,
         re.IGNORECASE,
-    ):
+    ))
+    if not filename_is_crp and not text_is_crp:
         return None
     article_match = re.search(r"\bartigo(?:\s+matricial)?\D{0,20}(\d{1,10}[A-Z]?)\b", normalized, re.IGNORECASE)
     section_match = re.search(r"\bseccao\D{0,15}([A-Z])\b", normalized, re.IGNORECASE)
@@ -278,6 +280,8 @@ def _parse_crp(file_name: str, text: str) -> CadernetaValues | None:
     signals = detect_signals(file_name, text)
     if not article and is_valid_matrix_article(signals.property_article):
         article = signals.property_article
+    if not article:
+        article = _matrix_article_from_filename(file_name)
     if not section and is_valid_matrix_section(signals.property_section):
         section = signals.property_section
     values = CadernetaValues(matrix_article=article, matrix_section=section).validated()
@@ -288,9 +292,22 @@ def _facts_agree(first: CadernetaValues | None, second: CadernetaValues | None) 
     if not first or not second:
         return False
     return bool(
-        first.matrix_article and first.matrix_article == second.matrix_article
+        first.matrix_article and _same_article(first.matrix_article, second.matrix_article)
         or first.matrix_section and first.matrix_section == second.matrix_section
     )
+
+
+def _matrix_article_from_filename(file_name: str) -> str:
+    normalized = re.sub(r"[_\s]", "-", file_name.upper())
+    match = re.search(r"(?:CRP-)?(?:VA|PR)-(\d{1,10}(?:-?[A-Z]{1,3})?)\b", normalized)
+    if not match:
+        return ""
+    value = match.group(1).replace("-", "")
+    return value if is_valid_matrix_article(value) else ""
+
+
+def _same_article(first: str, second: str) -> bool:
+    return re.sub(r"[-/\s]", "", first.upper()) == re.sub(r"[-/\s]", "", second.upper())
 
 
 def _identifiers(file_name: str, text: str, matrix_article: str) -> set[str]:
