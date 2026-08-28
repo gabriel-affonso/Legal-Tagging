@@ -14,6 +14,10 @@ from typing import Any, Callable, Mapping
 
 
 LEASE_THRESHOLD = 60
+INVALID_MATRIX_ARTICLES = frozenset({
+    "DA", "DO", "DOS", "DAS", "ES", "AO", "AOS", "TE", "YO", "DIS",
+    "PES", "GG", "SOB",
+})
 PROPERTY_SCHEMA = (
     "property_name",
     "matrix_article",
@@ -107,9 +111,10 @@ class PropertyExtractionPipeline:
             key=lambda item: item[1],
             default=("", 0),
         )
-        values = _extract_regex_values(candidate)
-        values = _validate_values(values)
-        confidence = _confidence(values)
+        raw_values = _extract_regex_values(candidate)
+        values = _validate_values(raw_values)
+        quality_penalty, validation_results = _quality_penalty(raw_values, values)
+        confidence = _confidence(values, quality_penalty)
         used_llm = False
         llm_error = ""
 
@@ -119,7 +124,8 @@ class PropertyExtractionPipeline:
                 recovered = _normalise_llm_values(self._llm_extractor(candidate))
                 values = _merge_with_verified_llm_values(values, recovered, candidate)
                 values = _validate_values(values)
-                confidence = _confidence(values)
+                quality_penalty, validation_results = _quality_penalty(raw_values, values)
+                confidence = _confidence(values, quality_penalty)
             except Exception as exc:  # The deterministic result remains useful.
                 llm_error = str(exc)[:500]
 
@@ -141,7 +147,9 @@ class PropertyExtractionPipeline:
             evidence_model=_contract_evidence(values),
             audit={
                 "lease_indicators": list(detection.matched_indicators),
-                "regex_values": _serialise_values(_extract_regex_values(candidate)),
+                "regex_values": _serialise_values(raw_values),
+                "validation_results": validation_results,
+                "quality_penalty": quality_penalty,
                 "context_reduced": has_considering,
                 "clause_a_found": has_clause_a,
             },
@@ -285,18 +293,24 @@ def _value_has_evidence(field: str, value: Any, text: str) -> bool:
 def _validate_values(values: dict[str, Any]) -> dict[str, Any]:
     validated = dict(values)
     name = _clean_property_name(str(validated["property_name"] or ""))
-    validated["property_name"] = name if len(name) > 2 else ""
+    validated["property_name"] = name if is_valid_property_name(name) else ""
     article = re.sub(r"\s*([- /])\s*", r"\1", str(validated["matrix_article"] or "").upper())
-    validated["matrix_article"] = article if re.fullmatch(r"[A-Z0-9]+(?:[-/][A-Z0-9]+)*", article) else ""
+    validated["matrix_article"] = article if is_valid_matrix_article(article) else ""
     section = str(validated["matrix_section"] or "").upper()
-    validated["matrix_section"] = section if re.fullmatch(r"[A-Z]{1,3}", section) else ""
+    validated["matrix_section"] = section if is_valid_matrix_section(section) else ""
     area = _normalise_area(validated["area_m2"])
     validated["area_m2"] = area if area is not None and area > 0 else None
     return validated
 
 
-def _confidence(values: Mapping[str, Any]) -> int:
-    return 25 * sum(values[field] not in ("", None) for field in PROPERTY_SCHEMA)
+def _confidence(values: Mapping[str, Any], penalty: int = 0) -> int:
+    weights = {
+        "property_name": 30,
+        "matrix_article": 30,
+        "matrix_section": 20,
+        "area_m2": 20,
+    }
+    return max(0, sum(weight for field, weight in weights.items() if values[field] not in ("", None)) - penalty)
 
 
 def _has_missing_values(values: Mapping[str, Any]) -> bool:
@@ -317,6 +331,51 @@ def _fold(value: str) -> str:
 def _clean_property_name(value: str) -> str:
     value = re.sub(r"\s+", " ", value).strip(" \t\n\"'«»“”.,;:-")
     return value[:200]
+
+
+def is_valid_matrix_article(value: str) -> bool:
+    normalized = value.strip().upper()
+    if not normalized or normalized in INVALID_MATRIX_ARTICLES:
+        return False
+    # Matrix articles are numeric identifiers, optionally with a suffix.
+    return bool(re.fullmatch(r"\d{1,10}(?:[A-Z]{1,3}|[-/][A-Z0-9]{1,10})?", normalized))
+
+
+def is_valid_matrix_section(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z]", value.strip().upper()))
+
+
+def is_valid_property_name(value: str) -> bool:
+    normalized = _fold(value)
+    alpha_chars = sum(char.isalpha() for char in value)
+    punctuation_ratio = sum(not char.isalnum() and not char.isspace() for char in value) / max(len(value), 1)
+    prohibited = ("doravante", "designado", "designada", "denominado o", "denominada a")
+    generic = ("predio rustico", "predio urbano", "predio misto")
+    return (
+        alpha_chars >= 3
+        and punctuation_ratio <= 0.30
+        and not any(term in normalized for term in prohibited)
+        and "predio" not in normalized
+        and normalized.strip() not in generic
+    )
+
+
+def _quality_penalty(raw_values: Mapping[str, Any], values: Mapping[str, Any]) -> tuple[int, list[str]]:
+    penalty = 0
+    results: list[str] = []
+    raw_article = str(raw_values.get("matrix_article") or "")
+    raw_name = str(raw_values.get("property_name") or "")
+    raw_section = str(raw_values.get("matrix_section") or "")
+    if raw_article and not values["matrix_article"]:
+        penalty += 30
+        results.append("invalid_matrix_article")
+    if raw_name and not values["property_name"]:
+        penalty += 30
+        results.append("invalid_property_name")
+    if raw_section and not values["matrix_section"]:
+        penalty += 10
+        results.append("invalid_matrix_section")
+    return penalty, results
 
 
 def _normalise_area(value: Any) -> int | float | None:
@@ -368,6 +427,9 @@ __all__ = [
     "PropertyExtraction",
     "PropertyExtractionPipeline",
     "detect_lease_contract",
+    "is_valid_matrix_article",
+    "is_valid_matrix_section",
+    "is_valid_property_name",
     "score_property_block",
     "select_clause_a",
     "select_considering_context",

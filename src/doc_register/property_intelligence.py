@@ -8,7 +8,12 @@ import re
 import unicodedata
 from typing import Any
 
-from .property_pipeline import PROPERTY_SCHEMA, PropertyExtraction
+from .property_pipeline import (
+    PROPERTY_SCHEMA,
+    PropertyExtraction,
+    is_valid_matrix_article,
+    is_valid_matrix_section,
+)
 
 
 CADENETA_THRESHOLD = 60
@@ -162,6 +167,8 @@ def reconcile_property(
     })
     return replace(
         contract,
+        status="needs_review" if validation else contract.status,
+        reason="contract_caderneta_mismatch" if validation else contract.reason,
         property_name=str(final["property_name"] or ""),
         matrix_article=str(final["matrix_article"] or ""),
         matrix_section=str(final["matrix_section"] or ""),
@@ -277,11 +284,11 @@ def _same_value(first: Any, second: Any) -> bool:
 
 
 def _valid_article(value: str) -> bool:
-    return bool(re.fullmatch(r"[A-Z0-9]+(?:[-/][A-Z0-9]+)*", value or ""))
+    return is_valid_matrix_article(value)
 
 
 def _valid_section(value: str) -> bool:
-    return bool(re.fullmatch(r"[A-Z]{1,3}", value or ""))
+    return is_valid_matrix_section(value)
 
 
 def _fold(value: str) -> str:

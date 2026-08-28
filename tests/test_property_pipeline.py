@@ -13,9 +13,14 @@ from doc_register.property_pipeline import (
     select_considering_context,
 )
 from doc_register.property_intelligence import (
+    CadernetaValues,
     discover_caderneta_pages,
     parse_caderneta,
     recover_from_annexes,
+)
+from doc_register.property_pack import (
+    PropertyDocumentDescriptor,
+    PropertyPackDiscovery,
 )
 from doc_register.registry import ExcelRegister, PROPERTY_SHEET_NAME, PropertyExcelRegister
 
@@ -30,7 +35,11 @@ def load_tests(
         test_fast_lease_detection_uses_weighted_indicators,
         test_extracts_property_fields_from_considering_clause_a_without_llm,
         test_llm_only_receives_selected_clause_and_cannot_override_regex,
+        test_invalid_article_and_section_have_zero_confidence,
+        test_invalid_property_name_is_rejected_and_triggers_recovery,
         test_context_and_clause_selectors_apply_the_expected_boundaries,
+        test_property_pack_matches_separate_caderneta_by_identifier,
+        test_property_pack_rejects_ambiguous_candidates,
         test_discovers_and_parses_caderneta_in_document_tail,
         test_reconciles_contract_and_caderneta_with_evidence,
         test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook,
@@ -110,7 +119,37 @@ def test_llm_only_receives_selected_clause_and_cannot_override_regex() -> None:
     assert result.matrix_article == "123"
     assert result.matrix_section == "K"
     assert result.area_m2 is None
-    assert result.confidence == 75
+    assert result.confidence == 80
+
+
+def test_invalid_article_and_section_have_zero_confidence() -> None:
+    result = PropertyExtractionPipeline().extract("""
+    CONTRATO DE ARRENDAMENTO
+    Senhorio, Arrendatário e renda mensal acordada.
+    Considerando que:
+    a) O prédio encontra-se inscrito na matriz sob o artigo ES, secção LX.
+    b) Cláusula seguinte.
+    """, allow_llm=False)
+
+    assert result.matrix_article == ""
+    assert result.matrix_section == ""
+    assert result.confidence == 0
+    assert "invalid_matrix_article" in result.audit["validation_results"]
+    assert "invalid_matrix_section" in result.audit["validation_results"]
+
+
+def test_invalid_property_name_is_rejected_and_triggers_recovery() -> None:
+    result = PropertyExtractionPipeline().extract("""
+    CONTRATO DE ARRENDAMENTO
+    Senhorio, Arrendatário e renda mensal acordada.
+    Considerando que:
+    a) O prédio denominado por (doravante designado apenas como Prédio), composto
+    por olival, encontra-se inscrito na matriz sob o artigo 123, secção K.
+    b) Cláusula seguinte.
+    """, allow_llm=False)
+
+    assert result.property_name == ""
+    assert "invalid_property_name" in result.audit["validation_results"]
 
 
 def test_context_and_clause_selectors_apply_the_expected_boundaries() -> None:
@@ -121,6 +160,56 @@ def test_context_and_clause_selectors_apply_the_expected_boundaries() -> None:
     assert found_context is True
     assert found_clause is True
     assert clause == "a) alvo"
+
+
+def test_property_pack_matches_separate_caderneta_by_identifier() -> None:
+    contract = PropertyExtractionPipeline().extract("""
+    CONTRATO DE ARRENDAMENTO
+    Senhorio, Arrendatário e renda mensal acordada.
+    Considerando que:
+    a) O prédio denominado por Quinta da Ribeira, composto por olival.
+    b) Cláusula seguinte.
+    """, allow_llm=False)
+    caderneta = CadernetaValues(
+        property_name="Quinta da Ribeira",
+        matrix_article="269F",
+        matrix_section="K",
+        area_m2=14812,
+    )
+    discovery = PropertyPackDiscovery([])
+    discovery._descriptors = (PropertyDocumentDescriptor(
+        path=Path("CadernetaPredial.pdf"),
+        identifiers=frozenset({"269F"}),
+        caderneta_values=caderneta,
+    ),)
+
+    match = discovery.find_for_contract(Path("VA553_269F_CA.pdf"), "", contract)
+
+    assert match.status == "property_pack_matched"
+    assert match.score >= 100
+    assert match.source_path == Path("CadernetaPredial.pdf")
+    assert match.caderneta_values == caderneta
+
+
+def test_property_pack_rejects_ambiguous_candidates() -> None:
+    caderneta = CadernetaValues(matrix_article="269F").validated()
+    discovery = PropertyPackDiscovery([])
+    discovery._descriptors = tuple(
+        PropertyDocumentDescriptor(
+            path=Path(f"Caderneta-{index}.pdf"),
+            identifiers=frozenset({"269F"}),
+            caderneta_values=caderneta,
+        )
+        for index in range(2)
+    )
+    contract = PropertyExtractionPipeline().extract(
+        "Contrato de arrendamento entre Senhorio e Arrendatário, com renda.",
+        allow_llm=False,
+    )
+
+    match = discovery.find_for_contract(Path("VA553_269F_CA.pdf"), "", contract)
+
+    assert match.status == "property_pack_ambiguous"
 
 
 def test_discovers_and_parses_caderneta_in_document_tail() -> None:
@@ -208,6 +297,6 @@ def test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook() -> No
         assert PROPERTY_SHEET_NAME in workbook.sheetnames
         assert "Document Register" in workbook.sheetnames
         sheet = workbook[PROPERTY_SHEET_NAME]
-        assert sheet.cell(row=2, column=2).value == "lease.pdf"
+        assert sheet.cell(row=2, column=3).value == "lease.pdf"
         assert property_register.existing_hashes() == {"property-hash"}
         workbook.close()

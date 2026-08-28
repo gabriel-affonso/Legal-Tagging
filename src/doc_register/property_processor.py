@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,7 +12,8 @@ from pathlib import Path
 from .config import AppConfig
 from .ollama_client import extract_property_with_ollama
 from .pdf_text import extract_pdf_annex_text, extract_text_with_optional_ocr
-from .property_intelligence import recover_from_annexes, recovery_required
+from .property_intelligence import reconcile_property, recover_from_annexes, recovery_required
+from .property_pack import PropertyPackDiscovery, PropertyPackMatch
 from .property_pipeline import PropertyExtractionPipeline
 from .registry import PropertyExcelRegister
 
@@ -30,9 +32,11 @@ class PropertyExtractionProcessor:
     def scan_once(self) -> int:
         self.config.ensure_directories()
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        existing_hashes = self.register.existing_hashes()
+        existing_hashes = self.register.existing_hashes(PIPELINE_VERSION)
+        pdf_files = self._iter_pdf_files()
+        pack_discovery = PropertyPackDiscovery(pdf_files)
         processed = 0
-        for path in self._iter_pdf_files():
+        for path in pdf_files:
             digest = _sha256(path)
             if digest in existing_hashes:
                 continue
@@ -57,15 +61,30 @@ class PropertyExtractionProcessor:
                 )
                 annex_text = ""
                 if result.status == "processed" and recovery_required(result):
-                    annex_text = extract_pdf_annex_text(path)
-                    result = recover_from_annexes(result, annex_text)
+                    pack_match = pack_discovery.find_for_contract(path, extracted.text, result)
+                    result = _with_property_pack_audit(result, pack_match)
+                    if pack_match.caderneta_values:
+                        result = reconcile_property(result, pack_match.caderneta_values, [])
+                    if recovery_required(result):
+                        annex_text = extract_pdf_annex_text(path)
+                        result = recover_from_annexes(result, annex_text)
                     if recovery_required(result) and self.config.property_llm_enabled:
                         llm_result = PropertyExtractionPipeline(self._llm_extractor()).extract(
                             extracted.text,
                             allow_llm=True,
                         )
+                        llm_result = _with_property_pack_audit(llm_result, pack_match)
+                        if pack_match.caderneta_values:
+                            llm_result = reconcile_property(llm_result, pack_match.caderneta_values, [])
                         result = recover_from_annexes(llm_result, annex_text)
+                if result.status == "processed" and recovery_required(result):
+                    result = replace(
+                        result,
+                        status="needs_review",
+                        reason="property_recovery_incomplete",
+                    )
                 payload = {
+                    "pipeline_version": PIPELINE_VERSION,
                     "processed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                     "source_file_name": path.name,
                     "source_file_path": str(path),
@@ -77,7 +96,7 @@ class PropertyExtractionProcessor:
                     "annex_text_chars": len(annex_text),
                     "result": result.to_dict(),
                 }
-                self.register.append(_excel_payload(payload, result.to_dict()))
+                self.register.upsert(_excel_payload(payload, result.to_dict()))
                 _write_json(self.output_dir / f"{digest}.json", payload)
                 existing_hashes.add(digest)
                 processed += 1
@@ -130,6 +149,7 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dict[str, object]:
     source = result.get("source") if isinstance(result.get("source"), dict) else {}
     return {
+        "pipeline_version": payload["pipeline_version"],
         "processed_at": payload["processed_at"],
         "source_file_name": payload["source_file_name"],
         "source_file_path": payload["source_file_path"],
@@ -155,7 +175,26 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "llm_error": result.get("llm_error", ""),
         "audit": result.get("audit", {}),
         "evidence_model": result.get("evidence_model", {}),
+        "property_pack_status": _audit_value(result, "property_pack_status"),
+        "property_pack_match_score": _audit_value(result, "property_pack_match_score"),
+        "property_pack_match_method": _audit_value(result, "property_pack_match_method"),
+        "property_pack_candidate_count": _audit_value(result, "property_pack_candidate_count"),
+        "caderneta_source_file": _audit_value(result, "caderneta_source_file"),
     }
+
+
+PIPELINE_VERSION = "3.1"
+
+
+def _with_property_pack_audit(result, match: PropertyPackMatch):
+    audit = dict(result.audit)
+    audit.update(match.audit())
+    return replace(result, audit=audit)
+
+
+def _audit_value(result: dict[str, object], key: str) -> object:
+    audit = result.get("audit")
+    return audit.get(key, "") if isinstance(audit, dict) else ""
 
 
 __all__ = ["PropertyExtractionProcessor"]

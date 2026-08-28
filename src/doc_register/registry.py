@@ -17,6 +17,7 @@ SHEET_NAME = "Document Register"
 PROPERTY_SHEET_NAME = "Property Extraction"
 
 PROPERTY_REGISTER_COLUMNS = (
+    "pipeline_version",
     "processed_at",
     "source_file_name",
     "source_file_path",
@@ -41,6 +42,11 @@ PROPERTY_REGISTER_COLUMNS = (
     "annex_text_chars",
     "llm_error",
     "evidence_model",
+    "property_pack_status",
+    "property_pack_match_score",
+    "property_pack_match_method",
+    "property_pack_candidate_count",
+    "caderneta_source_file",
     "audit",
 )
 
@@ -202,14 +208,19 @@ class PropertyExcelRegister:
     def __init__(self, path: Path):
         self.path = path
 
-    def existing_hashes(self) -> set[str]:
+    def existing_hashes(self, pipeline_version: str | None = None) -> set[str]:
         with _workbook_lock(self.path):
             workbook, sheet = self._load()
             sha_col = PROPERTY_REGISTER_COLUMNS.index("sha256") + 1
+            version_col = PROPERTY_REGISTER_COLUMNS.index("pipeline_version") + 1
             values = {
                 str(sheet.cell(row=row, column=sha_col).value)
                 for row in range(2, sheet.max_row + 1)
                 if sheet.cell(row=row, column=sha_col).value
+                and (
+                    pipeline_version is None
+                    or sheet.cell(row=row, column=version_col).value == pipeline_version
+                )
             }
             workbook.close()
             return values
@@ -217,6 +228,26 @@ class PropertyExcelRegister:
     def append(self, payload: dict[str, object]) -> None:
         with _workbook_lock(self.path):
             workbook, sheet = self._load()
+            sheet.append([
+                _excel_value(payload.get(column, ""))
+                for column in PROPERTY_REGISTER_COLUMNS
+            ])
+            self._format(sheet)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(self.path)
+            workbook.close()
+
+    def upsert(self, payload: dict[str, object]) -> None:
+        """Replace older pipeline results for the same PDF hash."""
+        sha256 = str(payload.get("sha256") or "")
+        if not sha256:
+            raise ValueError("Property result requires sha256.")
+        with _workbook_lock(self.path):
+            workbook, sheet = self._load()
+            sha_col = PROPERTY_REGISTER_COLUMNS.index("sha256") + 1
+            for row in range(sheet.max_row, 1, -1):
+                if str(sheet.cell(row=row, column=sha_col).value or "") == sha256:
+                    sheet.delete_rows(row)
             sheet.append([
                 _excel_value(payload.get(column, ""))
                 for column in PROPERTY_REGISTER_COLUMNS
@@ -260,10 +291,10 @@ class PropertyExcelRegister:
     def _format(self, sheet) -> None:
         sheet.freeze_panes = "A2"
         widths = {
-            "processed_at": 22, "source_file_name": 34, "source_file_path": 48,
+            "pipeline_version": 16, "processed_at": 22, "source_file_name": 34, "source_file_path": 48,
             "sha256": 66, "property_name": 42, "reason": 28,
             "extraction_notes": 54, "llm_error": 48, "evidence_model": 80,
-            "audit": 80,
+            "property_pack_match_method": 34, "caderneta_source_file": 34, "audit": 80,
         }
         for index, header in enumerate(PROPERTY_REGISTER_COLUMNS, start=1):
             if header in widths:

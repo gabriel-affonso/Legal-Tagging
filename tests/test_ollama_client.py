@@ -4,10 +4,35 @@ import unittest
 from unittest.mock import patch
 
 from doc_register.detectors import detect_signals
-from doc_register.ollama_client import OllamaTimeoutError, extract_with_ollama
+from doc_register.ollama_client import (
+    OllamaTimeoutError,
+    extract_property_with_ollama,
+    extract_with_ollama,
+)
 
 
 class OllamaClientTests(unittest.TestCase):
+    def test_property_prompt_formats_literal_json_schema(self) -> None:
+        with patch(
+            "doc_register.ollama_client._chat_json",
+            return_value={
+                "property_name": "Quinta da Ribeira",
+                "matrix_article": "123",
+                "matrix_section": "K",
+                "area_m2": "45230",
+            },
+        ) as chat:
+            result = extract_property_with_ollama(
+                "http://localhost:11434",
+                "model",
+                "a) Prédio denominado por Quinta da Ribeira.",
+            )
+
+        prompt = chat.call_args.args[2]
+        self.assertIn('"property_name": ""', prompt)
+        self.assertIn("Quinta da Ribeira", prompt)
+        self.assertEqual(result["matrix_article"], "123")
+
     def test_classification_timeout_returns_deterministic_fallback(self) -> None:
         signals = detect_signals("IBAN.pdf", "IBAN PT50 0002 0123 1234 5678 9015 4")
 

@@ -116,12 +116,12 @@ Rules:
 4. area_m2 must contain only the numeric value in square metres, without a unit.
 
 Required JSON object:
-{
+{{
   "property_name": "",
   "matrix_article": "",
   "matrix_section": "",
   "area_m2": ""
-}
+}}
 
 Lease-contract clause:
 {clause_text}

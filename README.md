@@ -147,6 +147,10 @@ nome da caderneta têm prioridade; divergências de artigo ou secção ficam
 registadas para revisão. A aba `Property Extraction` guarda a proveniência por
 campo e a auditoria completa da recuperação.
 
+O [Step 3.1](docs/step3.1.md) amplia essa recuperação para cadernetas que
+existem como PDFs separados na mesma pasta do contrato. Cada nova execução
+substitui o resultado anterior do mesmo PDF na aba `Property Extraction`.
+
 Configurações opcionais:
 
 - `property_extraction_dir`: diretório dos JSONs da pipeline secundária.
