@@ -61,12 +61,14 @@ def extract_pdf_text(
 def extract_pdf_annex_text(
     path: Path,
     *,
-    max_chars: int = 30000,
+    max_chars: int = 100000,
 ) -> str:
-    """Extract the final 30% or 10 pages of a PDF for annex discovery.
+    """Extract a broad region close to the end of a PDF for annex discovery.
 
-    This intentionally reads only the region where annexes normally occur,
-    avoiding a second whole-document extraction in the property pipeline.
+    Pages are read backwards from the end so the character limit can never
+    discard the final pages.  The resulting text is restored to page order.
+    This is important for cadernetas that begin shortly before the final page
+    rather than on the document's last page.
     """
     try:
         from pypdf import PdfReader
@@ -77,19 +79,20 @@ def extract_pdf_annex_text(
     page_count = len(reader.pages)
     if not page_count:
         return ""
-    annex_count = max(min(10, page_count), int((page_count * 0.30) + 0.999))
+    annex_count = max(min(30, page_count), int((page_count * 0.60) + 0.999))
     start_index = max(0, page_count - annex_count)
-    chunks: list[str] = []
+    chunks: list[tuple[int, str]] = []
     current_chars = 0
-    for page_index in range(start_index, page_count):
+    for page_index in range(page_count - 1, start_index - 1, -1):
         page_text = _normalize_page_text(reader.pages[page_index].extract_text() or "", preserve_layout=True)
         if page_text:
             chunk = f"[Page {page_index + 1}] {page_text}"
-            chunks.append(chunk)
+            chunks.append((page_index, chunk))
             current_chars += len(chunk)
         if current_chars >= max_chars:
             break
-    return "\n\n".join(chunks)[:max_chars]
+    chunks.sort(key=lambda item: item[0])
+    return "\n\n".join(chunk for _, chunk in chunks)
 
 
 def extract_pdf_layout_text(path: Path, max_pages: int, max_chars: int) -> str:

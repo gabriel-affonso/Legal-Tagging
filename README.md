@@ -156,6 +156,10 @@ CRPs escaneadas antes de tentar associá-las ao contrato.
 
 O [Step 3.1.2](docs/step3.1.2.md) reconcilia conjuntamente o contrato com
 cadernetas separadas e com cadernetas presentes no final do próprio PDF.
+O [Step 3.1.3](docs/step3.1.3.md) reforça a leitura de anexos no próprio
+contrato: pesquisa uma faixa mais ampla perto do final, a partir das últimas
+páginas, e identifica o título `Actualização de Caderneta Predial Rústica`
+com `Modelo B`, incluindo as páginas seguintes da caderneta.
 
 Configurações opcionais:
 

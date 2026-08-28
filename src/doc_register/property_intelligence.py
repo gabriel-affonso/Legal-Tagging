@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import math
 import re
 import unicodedata
 from typing import Any
@@ -17,6 +16,7 @@ from .property_pipeline import (
 
 
 CADENETA_THRESHOLD = 60
+CADENETA_CONTEXT_PAGES = 3
 
 
 @dataclass(frozen=True)
@@ -69,13 +69,31 @@ def discover_caderneta_pages(text: str) -> list[AnnexPage]:
     pages = _split_pages(text)
     if not pages:
         return []
-    tail_count = max(min(10, len(pages)), math.ceil(len(pages) * 0.30))
-    tail = pages[-tail_count:]
-    return [
+    scored_pages = [
         AnnexPage(page_number=page_number, text=page_text, caderneta_score=_caderneta_score(page_text))
-        for page_number, page_text in tail
-        if _caderneta_score(page_text) >= CADENETA_THRESHOLD
+        for page_number, page_text in pages
     ]
+    title_indexes = {
+        index
+        for index, page in enumerate(scored_pages)
+        if _has_caderneta_title(page.text)
+    }
+    matched_indexes = {
+        index
+        for index, page in enumerate(scored_pages)
+        if page.caderneta_score >= CADENETA_THRESHOLD
+    }
+    # The title page often contains only "Actualização de Caderneta Predial
+    # Rústica — Modelo B".  Include its nearby pages, where the structured
+    # article, section, name and area are normally printed.
+    for title_index in title_indexes:
+        matched_indexes.update(
+            range(
+                title_index,
+                min(len(scored_pages), title_index + CADENETA_CONTEXT_PAGES),
+            )
+        )
+    return [page for index, page in enumerate(scored_pages) if index in matched_indexes]
 
 
 def parse_caderneta(pages: list[AnnexPage]) -> CadernetaValues:
@@ -221,6 +239,9 @@ def _split_pages(text: str) -> list[tuple[int, str]]:
 def _caderneta_score(text: str) -> int:
     normalized = _fold(text)
     indicators = (
+        (r"\bactualizacao\s+(?:de\s+)?caderneta\s+predial\s+rustica\b", 70),
+        (r"\bcaderneta\s+predial\s+rustica\b", 45),
+        (r"\bmodelo\s*[-:]?\s*B\b", 30),
         (r"\bcaderneta\s+predial\b", 30),
         (r"\bidentificacao\s+do\s+predio\b", 20),
         (r"\bartigo\s+matricial\b", 20),
@@ -229,6 +250,15 @@ def _caderneta_score(text: str) -> int:
         (r"\btitulares\b", 10),
     )
     return sum(weight for pattern, weight in indicators if re.search(pattern, normalized, re.IGNORECASE))
+
+
+def _has_caderneta_title(text: str) -> bool:
+    normalized = _fold(text)
+    return bool(re.search(
+        r"\b(?:actualizacao\s+(?:de\s+)?)?caderneta\s+predial\s+rustica\b",
+        normalized,
+        re.IGNORECASE,
+    )) and bool(re.search(r"\bmodelo\s*[-:]?\s*B\b", normalized, re.IGNORECASE))
 
 
 def _label_value(text: str, label: str, stop: str) -> str:

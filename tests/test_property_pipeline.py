@@ -45,6 +45,7 @@ def load_tests(
         test_sp_sequence_chain_matches_unique_crp_and_caderneta,
         test_sp_sequence_chain_uses_crp_filename_when_ocr_is_weak,
         test_same_pdf_caderneta_is_reconciled_with_contract,
+        test_title_and_model_b_identify_same_pdf_caderneta_near_document_end,
         test_property_pack_matches_separate_caderneta_by_identifier,
         test_property_pack_rejects_ambiguous_candidates,
         test_discovers_and_parses_caderneta_in_document_tail,
@@ -361,6 +362,32 @@ def test_same_pdf_caderneta_is_reconciled_with_contract() -> None:
     assert result.area_m2 == 14812
     assert result.audit["caderneta_same_pdf_found"] is True
     assert result.audit["caderneta_evidence_sources"] == ["Contrato.pdf"]
+
+
+def test_title_and_model_b_identify_same_pdf_caderneta_near_document_end() -> None:
+    early_contract_pages = "\n".join(
+        f"[Page {index}] cláusulas do contrato" for index in range(1, 19)
+    )
+    caderneta = """
+    [Page 19] ACTUALIZAÇÃO DE CADERNETA PREDIAL RÚSTICA
+    MODELO B
+    [Page 20] IDENTIFICAÇÃO DO PRÉDIO
+    NOME/LOCALIZAÇÃO PRÉDIO: Herdade da Fonte
+    ARTIGO MATRICIAL Nº: 456
+    SECÇÃO: M
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 2,5
+    TITULARES
+    """
+
+    pages = discover_caderneta_pages(early_contract_pages + caderneta)
+    values = parse_caderneta(pages)
+
+    assert [page.page_number for page in pages] == [19, 20]
+    assert values.property_name == "Herdade da Fonte"
+    assert values.matrix_article == "456"
+    assert values.matrix_section == "M"
+    assert values.area_m2 == 25000
 
 
 def test_discovers_and_parses_caderneta_in_document_tail() -> None:
