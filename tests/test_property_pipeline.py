@@ -12,6 +12,11 @@ from doc_register.property_pipeline import (
     select_clause_a,
     select_considering_context,
 )
+from doc_register.property_intelligence import (
+    discover_caderneta_pages,
+    parse_caderneta,
+    recover_from_annexes,
+)
 from doc_register.registry import ExcelRegister, PROPERTY_SHEET_NAME, PropertyExcelRegister
 
 
@@ -26,6 +31,8 @@ def load_tests(
         test_extracts_property_fields_from_considering_clause_a_without_llm,
         test_llm_only_receives_selected_clause_and_cannot_override_regex,
         test_context_and_clause_selectors_apply_the_expected_boundaries,
+        test_discovers_and_parses_caderneta_in_document_tail,
+        test_reconciles_contract_and_caderneta_with_evidence,
         test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook,
     )
     return unittest.TestSuite(unittest.FunctionTestCase(function) for function in functions)
@@ -114,6 +121,58 @@ def test_context_and_clause_selectors_apply_the_expected_boundaries() -> None:
     assert found_context is True
     assert found_clause is True
     assert clause == "a) alvo"
+
+
+def test_discovers_and_parses_caderneta_in_document_tail() -> None:
+    front_pages = "\n".join(f"[Page {index}] contrato" for index in range(1, 11))
+    caderneta = """
+    [Page 11] CADERNETA PREDIAL RÚSTICA
+    IDENTIFICAÇÃO DO PRÉDIO
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
+    ARTIGO MATRICIAL Nº: 123
+    SECÇÃO: K
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 1,481200
+    TITULARES
+    """
+
+    pages = discover_caderneta_pages(front_pages + caderneta)
+    values = parse_caderneta(pages)
+
+    assert [page.page_number for page in pages] == [11]
+    assert values.property_name == "Quinta da Ribeira"
+    assert values.matrix_article == "123"
+    assert values.matrix_section == "K"
+    assert values.area_m2 == 14812
+
+
+def test_reconciles_contract_and_caderneta_with_evidence() -> None:
+    contract = PropertyExtractionPipeline().extract("""
+    CONTRATO DE ARRENDAMENTO
+    Senhorio, Arrendatário e renda mensal acordada.
+    Considerando que:
+    a) O prédio rústico denominado por Quinta da Ribeira, composto por olival,
+    encontra-se inscrito na matriz sob o artigo 123, secção K.
+    b) Cláusula seguinte.
+    """)
+    annex = """
+    [Page 11] CADERNETA PREDIAL RÚSTICA
+    IDENTIFICAÇÃO DO PRÉDIO
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
+    ARTIGO MATRICIAL Nº: 123
+    SECÇÃO: K
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 1,481200
+    TITULARES
+    """
+
+    result = recover_from_annexes(contract, annex)
+
+    assert result.area_m2 == 14812
+    assert result.confidence == 100
+    assert result.evidence_model["area_m2"]["source"] == "caderneta_predial"
+    assert result.evidence_model["matrix_article"]["source"] == "contract_and_caderneta"
+    assert result.audit["recovered_fields"] == ["area_m2"]
 
 
 def test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook() -> None:

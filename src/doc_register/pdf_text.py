@@ -58,6 +58,40 @@ def extract_pdf_text(
     return "\n\n".join(chunks)[:max_chars]
 
 
+def extract_pdf_annex_text(
+    path: Path,
+    *,
+    max_chars: int = 30000,
+) -> str:
+    """Extract the final 30% or 10 pages of a PDF for annex discovery.
+
+    This intentionally reads only the region where annexes normally occur,
+    avoiding a second whole-document extraction in the property pipeline.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError("Missing dependency: install pypdf with `pip install -r requirements.txt`.") from exc
+
+    reader = PdfReader(str(path))
+    page_count = len(reader.pages)
+    if not page_count:
+        return ""
+    annex_count = max(min(10, page_count), int((page_count * 0.30) + 0.999))
+    start_index = max(0, page_count - annex_count)
+    chunks: list[str] = []
+    current_chars = 0
+    for page_index in range(start_index, page_count):
+        page_text = _normalize_page_text(reader.pages[page_index].extract_text() or "", preserve_layout=True)
+        if page_text:
+            chunk = f"[Page {page_index + 1}] {page_text}"
+            chunks.append(chunk)
+            current_chars += len(chunk)
+        if current_chars >= max_chars:
+            break
+    return "\n\n".join(chunks)[:max_chars]
+
+
 def extract_pdf_layout_text(path: Path, max_pages: int, max_chars: int) -> str:
     """Extract text with page/block/line structure when PyMuPDF is available."""
     try:

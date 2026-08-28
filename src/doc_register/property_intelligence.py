@@ -1,0 +1,301 @@
+"""Deterministic annex recovery and reconciliation for lease properties."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+import math
+import re
+import unicodedata
+from typing import Any
+
+from .property_pipeline import PROPERTY_SCHEMA, PropertyExtraction
+
+
+CADENETA_THRESHOLD = 60
+
+
+@dataclass(frozen=True)
+class AnnexPage:
+    page_number: int
+    text: str
+    caderneta_score: int
+
+
+@dataclass(frozen=True)
+class CadernetaValues:
+    property_name: str = ""
+    matrix_article: str = ""
+    matrix_section: str = ""
+    area_m2: int | float | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "property_name": self.property_name or None,
+            "matrix_article": self.matrix_article or None,
+            "matrix_section": self.matrix_section or None,
+            "area_m2": self.area_m2,
+        }
+
+    def validated(self) -> "CadernetaValues":
+        property_name = self.property_name if len(self.property_name) > 2 else ""
+        article = self.matrix_article.upper().replace(" ", "")
+        section = self.matrix_section.upper().replace(" ", "")
+        return CadernetaValues(
+            property_name=property_name,
+            matrix_article=article if _valid_article(article) else "",
+            matrix_section=section if _valid_section(section) else "",
+            area_m2=self.area_m2 if self.area_m2 and self.area_m2 > 0 else None,
+        )
+
+
+def recovery_required(result: PropertyExtraction) -> bool:
+    return (
+        result.confidence < 80
+        or not result.property_name
+        or not result.matrix_article
+        or not result.matrix_section
+        or result.area_m2 is None
+        or not _valid_article(result.matrix_article)
+        or not _valid_section(result.matrix_section)
+    )
+
+
+def discover_caderneta_pages(text: str) -> list[AnnexPage]:
+    pages = _split_pages(text)
+    if not pages:
+        return []
+    tail_count = max(min(10, len(pages)), math.ceil(len(pages) * 0.30))
+    tail = pages[-tail_count:]
+    return [
+        AnnexPage(page_number=page_number, text=page_text, caderneta_score=_caderneta_score(page_text))
+        for page_number, page_text in tail
+        if _caderneta_score(page_text) >= CADENETA_THRESHOLD
+    ]
+
+
+def parse_caderneta(pages: list[AnnexPage]) -> CadernetaValues:
+    text = "\n".join(page.text for page in pages)
+    return CadernetaValues(
+        property_name=_label_value(
+            text,
+            r"NOME\s*/?\s*LOCALIZACAO(?:\s+DO)?\s+PREDIO",
+            r"ELEMENTOS\s+DO\s+PREDIO|ARTIGO\s+MATRICIAL|MATRIZ\s+PREDIAL|SECCAO|TITULARES",
+        ),
+        matrix_article=_label_value(text, r"ARTIGO\s+MATRICIAL(?:\s+N[Oº.]*)?", r"SECCAO|ELEMENTOS\s+DO\s+PREDIO|TITULARES"),
+        matrix_section=_label_value(text, r"SECCAO", r"ELEMENTOS\s+DO\s+PREDIO|TITULARES|AREA").upper(),
+        area_m2=_caderneta_area(text),
+    ).validated()
+
+
+def reconcile_property(
+    contract: PropertyExtraction,
+    caderneta: CadernetaValues,
+    pages: list[AnnexPage],
+) -> PropertyExtraction:
+    """Consolidate contract context and caderneta evidence without guessing."""
+    contract_values = _values_from_result(contract)
+    caderneta_values = caderneta.as_dict()
+    validation: list[str] = []
+    recovered_fields: list[str] = []
+    evidence: dict[str, dict[str, Any]] = {}
+    final = dict(contract_values)
+    agreements = 0
+
+    for field in PROPERTY_SCHEMA:
+        contract_value = contract_values[field]
+        caderneta_value = caderneta_values[field]
+        if contract_value not in ("", None) and caderneta_value not in ("", None):
+            if _same_value(contract_value, caderneta_value):
+                agreements += 1
+                evidence[field] = {
+                    "value": caderneta_value,
+                    "source": "contract_and_caderneta",
+                    "confidence": 99,
+                }
+                final[field] = caderneta_value
+            elif field in {"property_name", "area_m2"}:
+                # Caderneta values are structured and authoritative for these fields.
+                final[field] = caderneta_value
+                evidence[field] = {
+                    "value": caderneta_value,
+                    "source": "caderneta_predial",
+                    "confidence": 99,
+                }
+                recovered_fields.append(field)
+                validation.append(f"{field}_contract_caderneta_mismatch")
+            else:
+                # Preserve the contract value, but do not claim reconciliation.
+                evidence[field] = {
+                    "value": contract_value,
+                    "source": "contract_clause",
+                    "confidence": 60,
+                }
+                validation.append(f"{field}_contract_caderneta_mismatch")
+        elif caderneta_value not in ("", None):
+            final[field] = caderneta_value
+            recovered_fields.append(field)
+            evidence[field] = {
+                "value": caderneta_value,
+                "source": "caderneta_predial",
+                "confidence": 99,
+            }
+        elif contract_value not in ("", None):
+            evidence[field] = {
+                "value": contract_value,
+                "source": "contract_clause",
+                "confidence": 85,
+            }
+        else:
+            evidence[field] = {"value": None, "source": None, "confidence": 0}
+
+    confidence_before = contract.confidence
+    confidence_after = _confidence_v3(final, has_agreement=agreements > 0)
+    audit = dict(contract.audit)
+    audit.update({
+        "contract_values": contract_values,
+        "caderneta_values": caderneta_values,
+        "caderneta_pages": [page.page_number for page in pages],
+        "recovered_fields": recovered_fields,
+        "validation_results": validation or ["contract_and_caderneta_consistent"],
+        "confidence_before_recovery": confidence_before,
+        "confidence_after_recovery": confidence_after,
+    })
+    return replace(
+        contract,
+        property_name=str(final["property_name"] or ""),
+        matrix_article=str(final["matrix_article"] or ""),
+        matrix_section=str(final["matrix_section"] or ""),
+        area_m2=final["area_m2"],
+        confidence=confidence_after,
+        candidate_score=max(contract.candidate_score, max((page.caderneta_score for page in pages), default=0)),
+        evidence_model=evidence,
+        audit=audit,
+    )
+
+
+def recover_from_annexes(contract: PropertyExtraction, annex_text: str) -> PropertyExtraction:
+    pages = discover_caderneta_pages(annex_text)
+    if not pages:
+        audit = dict(contract.audit)
+        audit.update({
+            "contract_values": _values_from_result(contract),
+            "caderneta_values": {},
+            "caderneta_pages": [],
+            "recovered_fields": [],
+            "validation_results": ["caderneta_not_found"],
+            "confidence_before_recovery": contract.confidence,
+            "confidence_after_recovery": _confidence_v3(_values_from_result(contract), has_agreement=False),
+        })
+        return replace(contract, confidence=audit["confidence_after_recovery"], audit=audit)
+    return reconcile_property(contract, parse_caderneta(pages), pages)
+
+
+def _split_pages(text: str) -> list[tuple[int, str]]:
+    matches = list(re.finditer(r"\[Page\s+(\d+)\]", text, re.IGNORECASE))
+    if not matches:
+        return [(1, text)] if text.strip() else []
+    pages: list[tuple[int, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        page_text = text[match.end():end].strip()
+        if page_text:
+            pages.append((int(match.group(1)), page_text))
+    return pages
+
+
+def _caderneta_score(text: str) -> int:
+    normalized = _fold(text)
+    indicators = (
+        (r"\bcaderneta\s+predial\b", 30),
+        (r"\bidentificacao\s+do\s+predio\b", 20),
+        (r"\bartigo\s+matricial\b", 20),
+        (r"\bseccao\b", 10),
+        (r"\belementos\s+do\s+predio\b", 10),
+        (r"\btitulares\b", 10),
+    )
+    return sum(weight for pattern, weight in indicators if re.search(pattern, normalized, re.IGNORECASE))
+
+
+def _label_value(text: str, label: str, stop: str) -> str:
+    normalized = _fold(text)
+    match = re.search(
+        rf"{label}\s*[:\-]?\s*(.+?)(?={stop}|$)",
+        normalized,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    # Accent folding preserves one character per source character, so these
+    # offsets retain the original spelling/capitalization in the output.
+    value = re.sub(r"\s+", " ", text[match.start(1):match.end(1)]).strip(" .,:;-\n")
+    return value[:160]
+
+
+def _caderneta_area(text: str) -> int | float | None:
+    normalized = _fold(text)
+    hectare = re.search(r"area\s+total\s*\(\s*ha\s*\)\s*[:\-]?\s*([\d.,]+)", normalized, re.IGNORECASE)
+    if hectare:
+        number = _decimal_number(hectare.group(1))
+        if number is not None:
+            converted = number * 10_000
+            return int(converted) if converted.is_integer() else converted
+    square_meters = re.search(r"area(?:\s+total)?\s*(?:m2|m²)\s*[:\-]?\s*([\d.,]+)", normalized, re.IGNORECASE)
+    if square_meters:
+        return _decimal_number(square_meters.group(1))
+    return None
+
+
+def _decimal_number(value: str) -> float | None:
+    raw = value.replace(" ", "")
+    if not re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
+        return None
+    try:
+        return float(raw.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _values_from_result(result: PropertyExtraction) -> dict[str, Any]:
+    return {
+        "property_name": result.property_name,
+        "matrix_article": result.matrix_article,
+        "matrix_section": result.matrix_section,
+        "area_m2": result.area_m2,
+    }
+
+
+def _confidence_v3(values: dict[str, Any], *, has_agreement: bool) -> int:
+    weights = {"property_name": 30, "matrix_article": 30, "matrix_section": 20, "area_m2": 20}
+    score = sum(weight for field, weight in weights.items() if values[field] not in ("", None))
+    return min(100, score + (10 if has_agreement else 0))
+
+
+def _same_value(first: Any, second: Any) -> bool:
+    if isinstance(first, str) or isinstance(second, str):
+        return _fold(str(first)).replace(" ", "") == _fold(str(second)).replace(" ", "")
+    return first == second
+
+
+def _valid_article(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z0-9]+(?:[-/][A-Z0-9]+)*", value or ""))
+
+
+def _valid_section(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z]{1,3}", value or ""))
+
+
+def _fold(value: str) -> str:
+    return "".join(
+        character for character in unicodedata.normalize("NFD", value).upper()
+        if unicodedata.category(character) != "Mn"
+    )
+
+
+__all__ = [
+    "AnnexPage",
+    "CadernetaValues",
+    "discover_caderneta_pages",
+    "parse_caderneta",
+    "recover_from_annexes",
+    "recovery_required",
+]

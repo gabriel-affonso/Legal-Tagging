@@ -10,7 +10,8 @@ from pathlib import Path
 
 from .config import AppConfig
 from .ollama_client import extract_property_with_ollama
-from .pdf_text import extract_text_with_optional_ocr
+from .pdf_text import extract_pdf_annex_text, extract_text_with_optional_ocr
+from .property_intelligence import recover_from_annexes, recovery_required
 from .property_pipeline import PropertyExtractionPipeline
 from .registry import PropertyExcelRegister
 
@@ -48,8 +49,22 @@ class PropertyExtractionProcessor:
                     layout_extraction_enabled=self.config.pdf_layout_extraction_enabled,
                     layout_min_quality_score=self.config.pdf_layout_min_quality_score,
                 )
-                pipeline = PropertyExtractionPipeline(self._llm_extractor())
-                result = pipeline.extract(extracted.text)
+                # Step 3.0: contract rules run first.  The LLM is deliberately
+                # withheld until the caderneta recovery path is exhausted.
+                result = PropertyExtractionPipeline().extract(
+                    extracted.text,
+                    allow_llm=False,
+                )
+                annex_text = ""
+                if result.status == "processed" and recovery_required(result):
+                    annex_text = extract_pdf_annex_text(path)
+                    result = recover_from_annexes(result, annex_text)
+                    if recovery_required(result) and self.config.property_llm_enabled:
+                        llm_result = PropertyExtractionPipeline(self._llm_extractor()).extract(
+                            extracted.text,
+                            allow_llm=True,
+                        )
+                        result = recover_from_annexes(llm_result, annex_text)
                 payload = {
                     "processed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                     "source_file_name": path.name,
@@ -59,6 +74,7 @@ class PropertyExtractionProcessor:
                     "native_text_chars": extracted.native_text_chars,
                     "ocr_text_chars": extracted.ocr_text_chars,
                     "extraction_notes": extracted.notes,
+                    "annex_text_chars": len(annex_text),
                     "result": result.to_dict(),
                 }
                 self.register.append(_excel_payload(payload, result.to_dict()))
@@ -135,8 +151,10 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "native_text_chars": payload["native_text_chars"],
         "ocr_text_chars": payload["ocr_text_chars"],
         "extraction_notes": payload["extraction_notes"],
+        "annex_text_chars": payload["annex_text_chars"],
         "llm_error": result.get("llm_error", ""),
         "audit": result.get("audit", {}),
+        "evidence_model": result.get("evidence_model", {}),
     }
 
 

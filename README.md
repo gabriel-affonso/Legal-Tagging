@@ -120,11 +120,20 @@ doc-register property-scan --config config.json
 ```
 
 Ela grava um JSON por PDF em `property_extractions/` (ou no caminho definido
-por `property_extraction_dir`) e não altera o Excel, o arquivo ou o estado da
-pipeline principal. Primeiro calcula o score de arrendamento; documentos que
+por `property_extraction_dir`) e uma linha na aba `Property Extraction` do
+mesmo Excel. Não altera a aba principal, o arquivo ou o estado da pipeline
+principal. Primeiro calcula o score de arrendamento; documentos que
 não atingirem o limiar recebem `status: "skipped"` e `reason:
 "not_lease_contract"`. O Ollama local só recebe a alínea `a)` do bloco
 `Considerando que`, quando a extração por regras não alcançar 90 de confiança.
+
+No Step 3.0, uma extração de baixa confiança não chama o Ollama de imediato.
+Antes, a pipeline lê apenas a cauda do PDF (as últimas 10 páginas
+ou 30%, conforme o maior intervalo), localiza páginas de `Caderneta Predial`,
+extrai nome, artigo, secção e área por regras e reconcilia os dados. A área e o
+nome da caderneta têm prioridade; divergências de artigo ou secção ficam
+registadas para revisão. A aba `Property Extraction` guarda a proveniência por
+campo e a auditoria completa da recuperação.
 
 Configurações opcionais:
 

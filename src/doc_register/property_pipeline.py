@@ -49,6 +49,7 @@ class PropertyExtraction:
     used_llm: bool = False
     llm_error: str = ""
     evidence: str = ""
+    evidence_model: Mapping[str, Any] = field(default_factory=dict)
     audit: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -67,6 +68,7 @@ class PropertyExtraction:
             "lease_score": self.lease_score,
             "candidate_score": self.candidate_score,
             "used_llm": self.used_llm,
+            "evidence_model": dict(self.evidence_model),
         }
         if self.reason:
             output["reason"] = self.reason
@@ -86,7 +88,7 @@ class PropertyExtractionPipeline:
     def __init__(self, llm_extractor: LLMExtractor | None = None):
         self._llm_extractor = llm_extractor
 
-    def extract(self, document_text: str) -> PropertyExtraction:
+    def extract(self, document_text: str, *, allow_llm: bool = True) -> PropertyExtraction:
         text = _clean_text(document_text)
         detection = detect_lease_contract(text)
         if not detection.is_lease_contract:
@@ -111,7 +113,7 @@ class PropertyExtractionPipeline:
         used_llm = False
         llm_error = ""
 
-        if (confidence < 90 or _has_missing_values(values)) and self._llm_extractor:
+        if allow_llm and (confidence < 90 or _has_missing_values(values)) and self._llm_extractor:
             used_llm = True
             try:
                 recovered = _normalise_llm_values(self._llm_extractor(candidate))
@@ -136,6 +138,7 @@ class PropertyExtractionPipeline:
             used_llm=used_llm,
             llm_error=llm_error,
             evidence=candidate[:1000],
+            evidence_model=_contract_evidence(values),
             audit={
                 "lease_indicators": list(detection.matched_indicators),
                 "regex_values": _serialise_values(_extract_regex_values(candidate)),
@@ -347,6 +350,17 @@ def _normalise_area(value: Any) -> int | float | None:
 
 def _serialise_values(values: Mapping[str, Any]) -> dict[str, Any]:
     return {key: values.get(key) for key in PROPERTY_SCHEMA}
+
+
+def _contract_evidence(values: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        field: {
+            "value": values[field] if values[field] not in ("", None) else None,
+            "source": "contract_clause" if values[field] not in ("", None) else None,
+            "confidence": 85 if values[field] not in ("", None) else 0,
+        }
+        for field in PROPERTY_SCHEMA
+    }
 
 
 __all__ = [

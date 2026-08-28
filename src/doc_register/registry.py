@@ -38,7 +38,9 @@ PROPERTY_REGISTER_COLUMNS = (
     "native_text_chars",
     "ocr_text_chars",
     "extraction_notes",
+    "annex_text_chars",
     "llm_error",
+    "evidence_model",
     "audit",
 )
 
@@ -227,7 +229,6 @@ class PropertyExcelRegister:
     def _load(self):
         try:
             from openpyxl import Workbook, load_workbook
-            from openpyxl.worksheet.table import Table, TableStyleInfo
         except ImportError as exc:
             raise RuntimeError("Missing dependency: install openpyxl with `pip install -r requirements.txt`.") from exc
 
@@ -239,6 +240,13 @@ class PropertyExcelRegister:
                 sheet = workbook.create_sheet(PROPERTY_SHEET_NAME)
                 sheet.append(PROPERTY_REGISTER_COLUMNS)
                 _add_table(sheet, "PropertyExtraction", len(PROPERTY_REGISTER_COLUMNS))
+            migrated = _ensure_property_headers(sheet)
+            if not sheet.tables:
+                _add_table(sheet, "PropertyExtraction", len(PROPERTY_REGISTER_COLUMNS))
+                migrated = True
+            if migrated:
+                self._format(sheet)
+                workbook.save(self.path)
             return workbook, sheet
 
         workbook = Workbook()
@@ -254,7 +262,8 @@ class PropertyExcelRegister:
         widths = {
             "processed_at": 22, "source_file_name": 34, "source_file_path": 48,
             "sha256": 66, "property_name": 42, "reason": 28,
-            "extraction_notes": 54, "llm_error": 48, "audit": 80,
+            "extraction_notes": 54, "llm_error": 48, "evidence_model": 80,
+            "audit": 80,
         }
         for index, header in enumerate(PROPERTY_REGISTER_COLUMNS, start=1):
             if header in widths:
@@ -266,6 +275,29 @@ class PropertyExcelRegister:
 
 def _excel_value(value: object) -> object:
     return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+
+
+def _ensure_property_headers(sheet) -> bool:
+    existing_headers = [
+        str(sheet.cell(row=1, column=column).value or "")
+        for column in range(1, max(sheet.max_column, len(PROPERTY_REGISTER_COLUMNS)) + 1)
+    ]
+    if existing_headers[:len(PROPERTY_REGISTER_COLUMNS)] == list(PROPERTY_REGISTER_COLUMNS):
+        return False
+
+    rows: list[dict[str, object]] = []
+    for row_index in range(2, sheet.max_row + 1):
+        rows.append({
+            header: sheet.cell(row=row_index, column=column_index).value
+            for column_index, header in enumerate(existing_headers, start=1)
+            if header
+        })
+    if sheet.max_column:
+        sheet.delete_cols(1, sheet.max_column)
+    sheet.append(PROPERTY_REGISTER_COLUMNS)
+    for row in rows:
+        sheet.append([row.get(column, "") for column in PROPERTY_REGISTER_COLUMNS])
+    return True
 
 
 def _add_table(sheet, name: str, column_count: int) -> None:
