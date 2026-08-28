@@ -103,9 +103,13 @@ CONTRACT_TYPE_DEFINITIONS: tuple[ContractTypeDefinition, ...] = (
 
 
 def detect_contract_type(*values: str) -> ContractTypeDefinition | None:
-    normalized = _normalize(" ".join(value for value in values if value))
+    raw = " ".join(value for value in values if value)
+    normalized = _normalize(raw)
     if not normalized:
         return None
+    formal_type = _formal_title_contract_type(raw)
+    if formal_type is not None:
+        return formal_type
     for definition in CONTRACT_TYPE_DEFINITIONS:
         if any(_normalize(alias) in normalized for alias in definition.aliases):
             return definition
@@ -163,6 +167,29 @@ def apply_contract_type_hints(result: object, *evidence_values: str) -> None:
         setattr(result, "document_type", definition.label)
     setattr(result, "document_subtype", definition.code)
     setattr(result, "contract_type", definition.code)
+
+
+def _formal_title_contract_type(value: str) -> ContractTypeDefinition | None:
+    beginning = _normalize(str(value or "")[:1200])
+    if not beginning:
+        return None
+    priority_markers = (
+        (CONTRACT_POSITION_ASSIGNMENT, ("ACORDO DE CEDENCIA DE POSICAO CONTRATUAL", "CESSAO DE POSICAO CONTRATUAL")),
+        (PURCHASE_PROMISE, ("CONTRATO PROMESSA DE COMPRA E VENDA", "CONTRATO PROMESSA COMPRA E VENDA")),
+        (PURCHASE_OPTION, ("OPCAO DE COMPRA", "DIREITO DE OPCAO")),
+        (LEASE_AGREEMENT, ("CONTRATO DE ARRENDAMENTO",)),
+    )
+    for code, markers in priority_markers:
+        if any(marker in beginning for marker in markers):
+            return _definition_by_code(code)
+    return None
+
+
+def _definition_by_code(code: str) -> ContractTypeDefinition | None:
+    for definition in CONTRACT_TYPE_DEFINITIONS:
+        if definition.code == code:
+            return definition
+    return None
 
 
 def _is_blank_or_generic_contract_label(value: str) -> bool:

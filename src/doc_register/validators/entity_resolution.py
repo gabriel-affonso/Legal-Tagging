@@ -22,12 +22,17 @@ FILENAME_NOISE_RE = re.compile(
 PROPERTY_NAME_PATTERNS = (
     re.compile(
         r"\bpr[eé]dio(?:\s+(?:r[uú]stico|urbano|misto))?\s+"
-        r"(?:denominad[oa]|designad[oa])\s+[\"'“”«»]?(?P<value>[^\"'“”«»\n.;]{2,120})",
+        r"(?:denominad[oa]|designad[oa])(?:\s+por)?\s+"
+        r"[\"'“”«»]?(?P<value>[^\"'“”«».;]{2,160})",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:denominad[oa]|designad[oa]|conhecid[oa]\s+por)\s+"
-        r"[\"'“”«»]?(?P<value>[^\"'“”«»\n.;]{2,120})",
+        r"\b(?:denominad[oa]|designad[oa])(?:\s+por)?\s+"
+        r"[\"'“”«»]?(?P<value>[^\"'“”«».;]{2,160})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bconhecid[oa]\s+por\s+[\"'“”«»]?(?P<value>[^\"'“”«».;]{2,160})",
         re.IGNORECASE,
     ),
     re.compile(
@@ -53,6 +58,11 @@ GENERIC_PROPERTY_NAMES = {
     "PREDIO", "PREDIO RUSTICO", "PREDIO URBANO", "PREDIO MISTO",
     "IMOVEL", "PROPRIEDADE", "TERRENO", "PARCELA", "LOCAL ARRENDADO",
     "PREDIO SOLAR", "PREDIO PARA INSTALACAO DE CENTRAL SOLAR",
+    "LOCADO", "ARRENDADO",
+}
+PROPERTY_NAME_STOPWORDS = {"POR", "DE", "EM", "O", "A", "OS", "AS"}
+KNOWN_PROPERTY_NAMES = {
+    "AGUAXAIS": "Aguaxais",
 }
 PLACEHOLDER_NUMBERS = {"0", "00", "000", "123", "1234", "12345", "123456"}
 PROPERTY_NUMBER_FORBIDDEN_RE = re.compile(
@@ -60,6 +70,28 @@ PROPERTY_NUMBER_FORBIDDEN_RE = re.compile(
     r"decreto|cl[aá]usula|codigo|c[oó]digo)\b|%",
     re.IGNORECASE,
 )
+EVIDENCE_GATED_FIELDS = {
+    "owner_name",
+    "owner_tax_id",
+    "property_name",
+    "property_article",
+    "property_section",
+    "property_parish",
+    "property_municipality",
+    "property_district",
+    "property_location",
+    "property_address",
+    "monthly_rent",
+    "currency",
+    "option_price",
+    "purchase_price",
+    "assignment_price",
+}
+CURRENCY_ALIASES = {
+    "EUR": ("EUR", "EURO", "EUROS", "€"),
+    "USD": ("USD", "DOLAR", "DOLARES", "$"),
+    "GBP": ("GBP", "LIBRA", "LIBRAS", "£"),
+}
 
 
 @dataclass(frozen=True)
@@ -108,7 +140,10 @@ def apply_entity_resolution(
     _sanitize_party_fields(result, report)
     _sanitize_property_name(result, document_text, report)
     _resolve_property_number(result, file_name, document_text, report)
+    _resolve_lessor_from_filename(result, document_text, report)
     _resolve_contract_owner(result, report)
+    _copy_property_location_to_name(result, report)
+    _clear_unsupported_values(result, document_text, report)
 
     _attach_report(result, report)
     return result, report
@@ -193,13 +228,29 @@ def _sanitize_property_name(
     report: EntityResolutionReport,
 ) -> None:
     current = str(result.property_name or "").strip()
-    recovered = recover_property_name_from_text(document_text)
     if current and is_generic_property_name(current):
+        recovered = recover_property_name_from_text(document_text)
         if recovered:
             _set_field(result, report, "property_name", recovered, "property_name_context", "generic_property_name_replaced")
         else:
             _clear_field(result, report, "property_name", "generic_property_name")
         return
+    if current and _clean_property_name(current) != current:
+        cleaned_current = _clean_property_name(current)
+        if cleaned_current:
+            _set_field(
+                result,
+                report,
+                "property_name",
+                cleaned_current,
+                "property_name_cleanup",
+                "trimmed_generic_connector_or_location_tail",
+            )
+            current = cleaned_current
+        else:
+            _clear_field(result, report, "property_name", "invalid_property_name")
+            current = ""
+    recovered = recover_property_name_from_text(document_text)
     if not current and recovered:
         _set_field(result, report, "property_name", recovered, "property_name_context", "missing_property_name_recovered")
 
@@ -213,6 +264,31 @@ def recover_property_name_from_text(document_text: str) -> str:
             if candidate:
                 return candidate
     return ""
+
+
+def _resolve_lessor_from_filename(
+    result: ExtractionResult,
+    document_text: str,
+    report: EntityResolutionReport,
+) -> None:
+    if (result.document_category or "").strip().lower() != "lease_contract":
+        return
+    current = str(result.lessor or "").strip()
+    if current and _valid_party_candidate("lessor", current):
+        return
+    if not report.filename_owner_candidates:
+        return
+    if not _has_lessor_role_markers(document_text):
+        return
+    value = "; ".join(report.filename_owner_candidates[:4])
+    _set_field(
+        result,
+        report,
+        "lessor",
+        value,
+        "filename_owner_candidates_confirmed_by_lessor_roles",
+        "lessor_roles_present_but_ocr_name_unresolved",
+    )
 
 
 def _resolve_property_number(
@@ -255,7 +331,11 @@ def _resolve_contract_owner(
     lessee = str(result.lessee or "").strip()
 
     if owner and lessee and normalize_text(owner) == normalize_text(lessee):
-        if _valid_party_candidate("lessor", lessor) and normalize_text(lessor) != normalize_text(lessee):
+        if (
+            _valid_party_candidate("lessor", lessor)
+            and normalize_text(lessor) != normalize_text(lessee)
+            and not _field_was_set_by(report, "lessor", "filename_owner_candidates_confirmed_by_lessor_roles")
+        ):
             _set_field(
                 result,
                 report,
@@ -268,15 +348,45 @@ def _resolve_contract_owner(
             _clear_field(result, report, "owner_name", "owner_matched_lessee")
         return
 
-    if not owner and _valid_party_candidate("lessor", lessor):
+
+def _copy_property_location_to_name(
+    result: ExtractionResult,
+    report: EntityResolutionReport,
+) -> None:
+    if (result.document_category or "").strip().lower() != "property_document":
+        return
+    if str(result.property_name or "").strip():
+        return
+    location = str(result.property_location or "").strip()
+    candidate = _clean_property_name(location)
+    if candidate:
         _set_field(
             result,
             report,
-            "owner_name",
-            lessor,
-            "lessor_as_owner_candidate",
-            "lease_lessor_is_best_available_owner_candidate",
+            "property_name",
+            candidate,
+            "property_location_as_property_name",
+            "property_document_location_used_as_business_property_name",
         )
+
+
+def _clear_unsupported_values(
+    result: ExtractionResult,
+    document_text: str,
+    report: EntityResolutionReport,
+) -> None:
+    if not document_text.strip():
+        return
+    for field_name in EVIDENCE_GATED_FIELDS:
+        value = str(getattr(result, field_name, "") or "").strip()
+        if not value:
+            continue
+        if field_name == "currency":
+            if _currency_has_evidence(value, document_text):
+                continue
+        elif _value_has_evidence(value, field_name, document_text):
+            continue
+        _clear_field(result, report, field_name, "value_without_document_evidence")
 
 
 def _clean_property_name(value: str) -> str:
@@ -284,9 +394,12 @@ def _clean_property_name(value: str) -> str:
     candidate = candidate.split(",", 1)[0]
     candidate = re.sub(r"\s+", " ", candidate).strip(" ,;:-_\"'“”«»")
     candidate = re.sub(r"^(?:o|a|os|as)\s+", "", candidate, flags=re.IGNORECASE)
+    candidate = _known_property_name(candidate) or candidate
     if not candidate or len(candidate) < 3 or len(candidate) > 80:
         return ""
     if is_generic_property_name(candidate):
+        return ""
+    if normalize_text(candidate) in PROPERTY_NAME_STOPWORDS:
         return ""
     if validate_name_field("owner_name", candidate) == [] and normalize_text(candidate).startswith("PROPRIEDADE DE "):
         return ""
@@ -302,6 +415,97 @@ def _valid_party_candidate(field_name: str, value: str) -> bool:
     if normalize_text(candidate) in GENERIC_PARTY_VALUES:
         return False
     return not validate_name_field(field_name, candidate)
+
+
+def _has_lessor_role_markers(document_text: str) -> bool:
+    normalized = normalize_text(document_text)
+    if not normalized:
+        return False
+    role_hits = len(re.findall(r"\bSENHORIO(?:S|\s+\d+)?\b", normalized))
+    if role_hits >= 2:
+        return True
+    return bool(re.search(r"\b(?:PRIMEIR[OA] OUTORGANTE|LOCADOR(?:ES)?)\b", normalized))
+
+
+def _known_property_name(value: str) -> str:
+    compact = re.sub(r"[^A-Z0-9]", "", normalize_text(value))
+    for known, canonical in KNOWN_PROPERTY_NAMES.items():
+        if compact == known:
+            return canonical
+        if _levenshtein(compact, known) <= 2:
+            return canonical
+    return ""
+
+
+def _value_has_evidence(value: str, field_name: str, document_text: str) -> bool:
+    normalized_value = normalize_text(value)
+    normalized_document = normalize_text(document_text)
+    if not normalized_value or not normalized_document:
+        return False
+    parts = [part.strip() for part in str(value).split(";") if part.strip()]
+    if len(parts) > 1:
+        return all(_value_has_evidence(part, field_name, document_text) for part in parts)
+    if normalized_value in normalized_document:
+        return True
+
+    compact_value = compact_alphanumeric(value)
+    compact_document = compact_alphanumeric(document_text)
+    if compact_value and compact_value in compact_document:
+        return True
+
+    if field_name in {
+        "property_name",
+        "property_parish",
+        "property_municipality",
+        "property_district",
+        "property_location",
+    } and _fuzzy_place_has_evidence(value, document_text):
+        return True
+
+    if field_name in {"monthly_rent", "option_price", "purchase_price", "assignment_price"}:
+        return _money_has_evidence(value, document_text)
+    return False
+
+
+def _fuzzy_place_has_evidence(value: str, document_text: str) -> bool:
+    normalized_value = _normalize_words_for_fuzzy(value)
+    value_tokens = normalized_value.split()
+    if not value_tokens:
+        return False
+    document_tokens = _normalize_words_for_fuzzy(document_text).split()
+    size = len(value_tokens)
+    best = 999
+    for index in range(0, max(0, len(document_tokens) - size + 1)):
+        candidate = " ".join(document_tokens[index:index + size])
+        best = min(best, _levenshtein(candidate, normalized_value))
+        if best <= max(1, min(3, int(len(normalized_value) * 0.18))):
+            return True
+    return False
+
+
+def _normalize_words_for_fuzzy(value: str) -> str:
+    normalized = normalize_text(value)
+    normalized = re.sub(r"[^A-Z0-9 ]", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def _money_has_evidence(value: str, document_text: str) -> bool:
+    digits = re.sub(r"\D", "", value)
+    if not digits:
+        return False
+    document_digits = re.sub(r"\D", "", document_text)
+    if digits in document_digits:
+        return True
+    if digits.endswith("00") and digits[:-2] and digits[:-2] in document_digits:
+        return True
+    return False
+
+
+def _currency_has_evidence(value: str, document_text: str) -> bool:
+    normalized_currency = normalize_text(value)
+    aliases = CURRENCY_ALIASES.get(normalized_currency, (normalized_currency,))
+    normalized_document = normalize_text(document_text)
+    return any(normalize_text(alias) in normalized_document for alias in aliases if alias)
 
 
 def _nine_digit_number_has_tax_context(value: str, document_text: str) -> bool:
@@ -321,6 +525,39 @@ def _number_from_code(code: str) -> str:
         return ""
     number = match.group(0).lstrip("0")
     return number or "0"
+
+
+def _field_was_set_by(
+    report: EntityResolutionReport,
+    field_name: str,
+    method: str,
+) -> bool:
+    return any(
+        change.field == field_name and change.method == method
+        for change in report.changes
+    )
+
+
+def _levenshtein(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+    previous = list(range(len(right) + 1))
+    for index, left_char in enumerate(left, start=1):
+        current = [index]
+        for right_index, right_char in enumerate(right, start=1):
+            current.append(
+                min(
+                    previous[right_index] + 1,
+                    current[right_index - 1] + 1,
+                    previous[right_index - 1] + (left_char != right_char),
+                )
+            )
+        previous = current
+    return previous[-1]
 
 
 def _set_field(

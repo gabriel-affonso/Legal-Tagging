@@ -28,9 +28,10 @@ O processamento é híbrido e conservador:
 11. Step 2.3: recuperação focada para contratos de arrendamento, usando zonas contratuais, hierarquia de data assinada, bloco predial agrupado e correção OCR fuzzy conservadora.
 12. Step 2.4: segmentação local de cláusulas contratuais em blocos auditáveis como partes, imóvel, prazo, renda, pagamento e assinaturas; estes blocos podem recuperar campos ausentes antes da validação final.
 13. Step 2.5: extração complementar ao OCR com preservação de layout, escolha por score entre texto nativo simples, texto nativo estruturado e OCR, e fallback conservador quando uma fonte não melhora a qualidade.
-14. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
-15. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-16. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+14. Step 2.6: resolução de entidades de proprietário e terreno, com extração determinística de códigos `PR/VA`, bloqueio de valores genéricos e barreira de evidência para campos críticos.
+15. Step 2 AI Reviewer: revisão local por Ollama apenas para campos críticos ainda problemáticos, com janelas de evidência curtas e propostas validadas antes de alterar o registo.
+16. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+17. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -44,6 +45,8 @@ Regras de segurança importantes:
 - `payment_amount` só é aceite quando há contexto claro de valor/montante/total/pagamento.
 - `property_address` deve ser a morada/localização do imóvel; morada fiscal ou sede vai para revisão e pode ser movida para `owner_address`.
 - Documentos com dados bancários mas sem prova clara de pagamento são tratados como `bank_details`, não `payment_proof`.
+- Valores de proprietário, terreno, artigo, secção, morada, moeda e valores monetários extraídos por LLM precisam ter evidência literal, normalizada ou fuzzy conservadora no texto antes de chegar ao Excel.
+- `property_number` representa o número operacional interno derivado de códigos como `PR098` ou `VA140`; não deve receber NIF/NIPC, artigo matricial, número de cláusula, anexo ou placeholder.
 
 ## Instalação
 
@@ -238,6 +241,30 @@ O Step 2.5 melhora a entrada textual antes da classificação e extração. O ar
 Cada candidato recebe um score de qualidade com base em volume útil, linhas, páginas, sinais documentais e ruído. O OCR deixa de ganhar apenas por ter mais caracteres; ele precisa melhorar a qualidade do texto ou resolver ausência de texto nativo. Quando o texto layout-aware já tem qualidade suficiente, o OCR é evitado.
 
 As fontes possíveis em `text_source` incluem `native_pdf_text`, `native_pdf_pypdf_layout_text`, `native_pdf_layout_text`, `cached_ocr_pdf_text`, `cached_ocr_pdf_pypdf_layout_text` e `cached_ocr_pdf_layout_text`.
+
+## Step 2.6 Entity Resolution
+
+O Step 2.6 aproxima o resultado final de uma verdade documental mais conservadora. O arquivo principal é `src/doc_register/validators/entity_resolution.py`, aplicado durante a validação normal e novamente no passe final depois do AI Reviewer.
+
+A camada extrai códigos internos do nome do arquivo, como `PR098`, `VA140` e sequências `VA088_089_397_399_401`. Esses códigos alimentam `property_number` como número operacional interno, sem misturar esse conceito com `property_article`, `property_section` ou número de descrição predial.
+
+Também são extraídos candidatos de proprietário/senhorio a partir do filename. Em contratos com marcadores como `Senhorio 1`, `Senhorio 2` ou `Senhorios`, quando o OCR confirma o papel mas não permite ler os nomes, o sistema pode preencher `lessor` com os candidatos do filename usando confiança média e auditoria. Essa regra não copia automaticamente o mesmo valor para `owner_name`, porque titularidade jurídica deve vir de caderneta, CRP ou outra evidência predial.
+
+O Step 2.6 bloqueia valores finais perigosos:
+
+- rótulos genéricos em partes, como `Senhorios`, `Arrendatária`, `Outorgante` e `As partes`;
+- nomes genéricos de terreno, como `Prédio`, `Prédio rústico`, `Terreno`, `Parcela`, `Locado` e `Prédio Solar`;
+- `property_number` com NIF/NIPC, placeholders, artigos legais, anexos, percentagens, letras isoladas ou texto como `não especificado`;
+- `owner_name` igual à arrendatária, salvo quando outra evidência forte demonstrar titularidade;
+- campos prioritários e monetários sem evidência no documento.
+
+Para `property_name`, a camada procura denominações e topónimos em padrões como `denominado`, `denominado por`, `designado`, `conhecido por` e `sito no lugar de`, inclusive quando há quebras de linha causadas por OCR. Casos OCR conhecidos, como `A Gyax ais`, são normalizados para `Aguaxais` quando há evidência local suficiente. Em documentos prediais, `property_location` pode preencher `property_name` quando a localização é o topónimo empresarial usado para identificar o terreno.
+
+O Step 2.6.2 adiciona uma barreira de evidência para reduzir alucinações do LLM. Campos como `owner_name`, `owner_tax_id`, `property_name`, `property_article`, `property_section`, localidades, moradas, `monthly_rent`, `currency`, `option_price`, `purchase_price` e `assignment_price` são apagados quando não aparecem no texto de forma literal, compactada ou fuzzy conservadora. O objetivo é preferir campo vazio e revisão humana a um valor plausível mas fabricado.
+
+O detector predial também evita confundir `Ano de inscrição na matriz: 1945` com artigo matricial. Quando existe `Artigo matricial No: 140`, o artigo correto passa a ser `140`, reduzindo conflitos falsos entre caderneta e sinais determinísticos.
+
+O relatório completo fica em `raw_json["step2_6_entity_resolution"]`, com `property_codes`, `property_numbers`, candidatos do filename, mudanças aplicadas e valores bloqueados. As notas de extração incluem `Step 2.6 entity resolution` quando a camada altera algum campo.
 
 ## Tipologias Contratuais
 

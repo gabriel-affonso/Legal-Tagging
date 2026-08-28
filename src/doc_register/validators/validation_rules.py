@@ -93,10 +93,23 @@ def validate_name_quality(record: Any) -> list[str]:
 
 def validate_future_dates(record: Any) -> list[str]:
     issues=[]
-    for field in ("signed_date", "document_date", "contract_start_date", "contract_end_date", "payment_date"):
+    for field in ("signed_date", "document_date", "payment_date"):
         year=extract_year(_get(record, field))
         if year and year > CURRENT_YEAR + MAX_ACCEPTED_FUTURE_YEAR_OFFSET:
             issues.append(f"future_date_{field}")
+    return issues
+
+def validate_contract_date_order(record: Any) -> list[str]:
+    if _get(record, "document_category").lower() != "lease_contract":
+        return []
+    signed = _parse_date(_get(record, "signed_date"))
+    start = _parse_date(_get(record, "contract_start_date"))
+    end = _parse_date(_get(record, "contract_end_date"))
+    issues = []
+    if signed and start and start < signed:
+        issues.append("contract_start_before_signed_date")
+    if start and end and end <= start:
+        issues.append("contract_end_not_after_start")
     return issues
 
 def validate_property_section(record: Any) -> list[str]:
@@ -105,6 +118,10 @@ def validate_property_section(record: Any) -> list[str]:
 
 def validate_property_identity_fields(record: Any) -> list[str]:
     issues = []
+    article = _get(record, "property_article")
+    if article and not re.fullmatch(r"\d{1,8}", compact_alphanumeric(article)):
+        issues.append("invalid_property_article_format")
+
     property_name = _get(record, "property_name")
     if property_name and normalize_text(property_name) in GENERIC_PROPERTY_NAMES:
         issues.append("generic_property_name")
@@ -235,7 +252,7 @@ def requires_monthly_rent(record: Any) -> bool:
 ValidationFunction=Callable[[Any], list[str]]
 VALIDATORS: tuple[ValidationFunction,...] = (
     validate_missing_critical_fields, validate_generic_names, validate_future_dates,
-    validate_name_quality, validate_property_section, validate_confidence,
+    validate_contract_date_order, validate_name_quality, validate_property_section, validate_confidence,
     validate_ocr_quality, validate_iban,
     validate_portuguese_tax_id, validate_known_lessee, validate_monthly_rent,
     validate_contract_prices, validate_contract_amount_consistency,
@@ -250,3 +267,13 @@ def _money_key(value: str) -> str:
     if not value:
         return ""
     return re.sub(r"[^0-9]", "", value)
+
+
+def _parse_date(value: str) -> datetime | None:
+    value = str(value or "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None

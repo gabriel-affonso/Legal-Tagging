@@ -219,13 +219,32 @@ def has_payment_amount_context(text: str, amount: str) -> bool:
 def _extract_article_and_section(text: str) -> tuple[str, str]:
     # Prefer a single labelled expression such as "MATRIZ 140 SECÇÃO J".
     for match in ARTICLE_SECTION_RE.finditer(text):
+        if _match_is_matrix_inscription_year(text, match):
+            continue
         article = _clean_identifier(match.group(1))
         section = _clean_section(match.group(2) or "")
         if article:
             return article, section or _first_valid_section(text)
 
-    article = _first_group(ARTICLE_RE, text) or _first_group(MATRIX_ARTICLE_RE, text)
+    article = _first_property_article(text)
     return _clean_identifier(article), _first_valid_section(text)
+
+
+def _first_property_article(text: str) -> str:
+    for pattern in (ARTICLE_RE, MATRIX_ARTICLE_RE):
+        for match in pattern.finditer(text):
+            if _match_is_matrix_inscription_year(text, match):
+                continue
+            return match.group(1)
+    return ""
+
+
+def _match_is_matrix_inscription_year(text: str, match: re.Match[str]) -> bool:
+    if "ARTIGO" in _normalize_label(match.group(0)).upper():
+        return False
+    window = text[max(0, match.start() - 45): match.end() + 20]
+    normalized = _normalize_label(window).upper()
+    return "ANO DE INSCRICAO" in normalized and "MATRIZ" in normalized
 
 
 def _first_valid_section(text: str) -> str:
