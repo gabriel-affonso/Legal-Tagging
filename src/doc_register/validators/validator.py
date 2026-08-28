@@ -10,6 +10,7 @@ from .fuzzy_recovery import recover_fuzzy_fields
 from .iban_recovery import recover_iban_fields
 from .ocr_quality import apply_ocr_quality
 from .quality_score import calculate_score
+from .entity_resolution import apply_entity_resolution
 from .validation_rules import run_all_validations
 
 HIGH_PRIORITY_ISSUES = {
@@ -36,6 +37,9 @@ MEDIUM_PRIORITY_ISSUES = {
     "monthly_rent_conflicts_with_assignment_price",
     "property_article_conflicts_with_deterministic",
     "property_section_conflicts_with_deterministic",
+    "generic_property_name", "invalid_property_number",
+    "property_number_matches_tax_id", "owner_matches_lessee",
+    "lessor_matches_lessee",
 }
 ISSUE_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -51,6 +55,7 @@ def validate_result(
     recovery_ai_enabled: bool = False,
     recovery_timeout_seconds: int = 180,
     recover: bool = True,
+    entity_resolution: bool | None = None,
 ) -> ExtractionResult:
     """Recover critical fields, validate, score and enrich one result."""
     if document_text:
@@ -77,6 +82,14 @@ def validate_result(
             ollama_model=ollama_model,
             ai_enabled=recovery_ai_enabled,
             timeout_seconds=recovery_timeout_seconds,
+        )
+
+    should_resolve_entities = recover if entity_resolution is None else entity_resolution
+    if should_resolve_entities:
+        result, _entity_report = apply_entity_resolution(
+            result,
+            file_name=file_name,
+            document_text=document_text or "",
         )
 
     issues = _unique_sorted([
@@ -162,6 +175,7 @@ def calculate_review_priority(issues: Iterable[str]) -> str:
             "invalid_option_price_", "invalid_purchase_price_",
             "invalid_assignment_price_", "property_article_conflicts_",
             "property_section_conflicts_", "monthly_rent_conflicts_",
+            "property_number_matches_", "owner_matches_", "lessor_matches_",
         ))
         for i in values
     ):

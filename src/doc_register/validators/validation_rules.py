@@ -16,6 +16,12 @@ GENERIC_NAMES = {
     "TITULAR", "TITULARES", "BENEFICIARIO", "BENEFICIARIA",
     "PRIMEIRO OUTORGANTE", "SEGUNDO OUTORGANTE", "OUTORGANTE", "OUTORGANTES",
 }
+GENERIC_PROPERTY_NAMES = {
+    "PREDIO", "PREDIO RUSTICO", "PREDIO URBANO", "PREDIO MISTO",
+    "IMOVEL", "PROPRIEDADE", "TERRENO", "PARCELA", "LOCAL ARRENDADO",
+    "PREDIO SOLAR", "PREDIO PARA INSTALACAO DE CENTRAL SOLAR",
+}
+PROPERTY_NUMBER_PLACEHOLDERS = {"0", "00", "000", "123", "1234", "12345", "123456"}
 CRITICAL_FIELDS: dict[str, list[str]] = {
     "lease_contract": ["lessor", "lessee", "signed_date", "property_article", "property_section"],
     "property_document": ["property_article", "property_section", "owner_name"],
@@ -26,6 +32,11 @@ VALID_PROPERTY_SECTION_PATTERN = re.compile(r"^[A-Z]{1,3}$")
 YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 IBAN_ALLOWED_PATTERN = re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$")
 MONEY_PATTERN = re.compile(r"^(?:EUR\s*)?(?:\d{1,3}(?:[.\s]\d{3})*|\d+)(?:,\d{1,2})?\s*(?:EUR|€)?$", re.I)
+PROPERTY_NUMBER_FORBIDDEN_PATTERN = re.compile(
+    r"\b(?:artigo|art\.|anexo|nif|nipc|nao\s+especificado|não\s+especificado|"
+    r"decreto|cl[aá]usula|codigo|c[oó]digo)\b|%",
+    re.IGNORECASE,
+)
 
 def _get(record: Any, field: str) -> str:
     value = record.get(field, "") if isinstance(record, dict) else getattr(record, field, "")
@@ -61,6 +72,19 @@ def validate_generic_names(record: Any) -> list[str]:
             issues.append(f"generic_{field}")
     return issues
 
+def validate_party_role_conflicts(record: Any) -> list[str]:
+    if _get(record, "document_category").lower() != "lease_contract":
+        return []
+    lessor = normalize_text(_get(record, "lessor"))
+    lessee = normalize_text(_get(record, "lessee"))
+    owner = normalize_text(_get(record, "owner_name"))
+    issues = []
+    if lessor and lessee and lessor == lessee:
+        issues.append("lessor_matches_lessee")
+    if owner and lessee and owner == lessee:
+        issues.append("owner_matches_lessee")
+    return issues
+
 def validate_name_quality(record: Any) -> list[str]:
     issues=[]
     for field in ("lessor", "lessee", "owner_name", "bank_account_holder", "payer", "payee"):
@@ -78,6 +102,32 @@ def validate_future_dates(record: Any) -> list[str]:
 def validate_property_section(record: Any) -> list[str]:
     value=_get(record, "property_section")
     return [] if not value or VALID_PROPERTY_SECTION_PATTERN.fullmatch(compact_alphanumeric(value)) else ["invalid_property_section"]
+
+def validate_property_identity_fields(record: Any) -> list[str]:
+    issues = []
+    property_name = _get(record, "property_name")
+    if property_name and normalize_text(property_name) in GENERIC_PROPERTY_NAMES:
+        issues.append("generic_property_name")
+
+    property_number = _get(record, "property_number")
+    if not property_number:
+        return issues
+    normalized = normalize_text(property_number)
+    compact = compact_alphanumeric(property_number)
+    digits = re.sub(r"\D", "", property_number)
+    if normalized in {"NAO ESPECIFICADO", "NAO APLICAVEL", "N A", "N D"}:
+        issues.append("invalid_property_number")
+    elif compact in PROPERTY_NUMBER_PLACEHOLDERS:
+        issues.append("invalid_property_number")
+    elif PROPERTY_NUMBER_FORBIDDEN_PATTERN.search(property_number):
+        issues.append("invalid_property_number")
+    elif re.fullmatch(r"[A-Z]{1,4}", compact):
+        issues.append("invalid_property_number")
+    elif len(digits) == 9:
+        issues.append("property_number_matches_tax_id")
+    elif re.search(r"[A-Z]", compact) and not re.fullmatch(r"(?:PR|VA)\d{1,4}", compact):
+        issues.append("invalid_property_number")
+    return issues
 
 def validate_confidence(record: Any) -> list[str]:
     value=_get(record, "confidence").lower()
@@ -189,6 +239,7 @@ VALIDATORS: tuple[ValidationFunction,...] = (
     validate_ocr_quality, validate_iban,
     validate_portuguese_tax_id, validate_known_lessee, validate_monthly_rent,
     validate_contract_prices, validate_contract_amount_consistency,
+    validate_party_role_conflicts, validate_property_identity_fields,
 )
 def run_all_validations(record: Any) -> list[str]:
     issues=[]

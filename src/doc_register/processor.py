@@ -248,6 +248,7 @@ class DocumentProcessor:
             if hasattr(self.config, "critical_recovery_timeout_seconds")
             else 180,
             recover=False,
+            entity_resolution=True,
         )
         self.register.append(candidate, result)
         self._archive_candidate(candidate)
