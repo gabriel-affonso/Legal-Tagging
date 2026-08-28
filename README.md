@@ -109,23 +109,35 @@ source .venv/bin/activate
 doc-register scan --config config.json
 ```
 
-## Pipeline secundária de propriedades
+## Identificação de terrenos
 
-Para extrair apenas `property_name`, `matrix_article`, `matrix_section` e
-`area_m2` de contratos de arrendamento, execute a pipeline independente:
+Para executar apenas a identificação de terrenos em contratos de arrendamento,
+sem processar o registo documental completo, use:
 
 ```bash
 source .venv/bin/activate
 doc-register property-scan --config config.json
 ```
 
+Para manter esta identificação a monitorizar a pasta de entrada:
+
+```bash
+source .venv/bin/activate
+doc-register property-watch --config config.json
+```
+
 Ela grava um JSON por PDF em `property_extractions/` (ou no caminho definido
 por `property_extraction_dir`) e uma linha na aba `Property Extraction` do
 mesmo Excel. Não altera a aba principal, o arquivo ou o estado da pipeline
-principal. Primeiro calcula o score de arrendamento; documentos que
-não atingirem o limiar recebem `status: "skipped"` e `reason:
-"not_lease_contract"`. O Ollama local só recebe a alínea `a)` do bloco
-`Considerando que`, quando a extração por regras não alcançar 90 de confiança.
+principal. A saída contém `property_name`, `matrix_article`,
+`matrix_section`, `area_m2`, confiança, origem dos dados e auditoria.
+
+Primeiro, o processo confirma que o PDF é um contrato de arrendamento;
+documentos não compatíveis recebem `status: "skipped"` e
+`reason: "not_lease_contract"`. Nos casos de baixa confiança, procura uma
+`Caderneta Predial` nos anexos e usa-a para recuperar ou validar os dados.
+O Ollama local só é usado quando as extrações determinísticas do contrato e da
+caderneta não forem suficientes.
 
 No Step 3.0, uma extração de baixa confiança não chama o Ollama de imediato.
 Antes, a pipeline lê apenas a cauda do PDF (as últimas 10 páginas
