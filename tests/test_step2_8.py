@@ -89,6 +89,33 @@ class Step28Tests(unittest.TestCase):
         self.assertLess(reports[0].overall_page_quality, reports[1].overall_page_quality)
         self.assertLess(reports[0].numeric_recoverability, reports[1].numeric_recoverability)
 
+    def test_internal_model_a_caderneta_is_authoritative_for_property_and_owner(self) -> None:
+        document = """[Page 1] CONTRATO DE ARRENDAMENTO
+        Senhorio e Arrendatário acordam a renda anual.
+        [Page 21] CADERNETA PREDIAL RÚSTICA
+        Modelo A
+        [Page 22] IDENTIFICAÇÃO DO PRÉDIO
+        SECÇÃO: M
+        ARTIGO MATRICIAL Nº: 456
+        NOME/LOCALIZAÇÃO PRÉDIO: Herdade da Fonte
+        ELEMENTOS DO PRÉDIO
+        ÁREA TOTAL (HA): 2,5
+        [Page 23] TITULARES
+        Nome: Ana Maria da Silva
+        Morada: Caminho da Fonte
+        Tipo de titular: Propriedade plena
+        """
+        report = prepare_contract_final_resolution(document)
+        result = apply_contract_final_resolution(
+            ExtractionResult(document_category="lease_contract"), report
+        )
+
+        self.assertEqual(result.property_name, "Herdade da Fonte")
+        self.assertEqual(result.property_article, "456")
+        self.assertEqual(result.property_section, "M")
+        self.assertEqual(result.property_total_area, "2.5 hectares")
+        self.assertEqual(result.owner_name, "Ana Maria da Silva")
+
 
 if __name__ == "__main__":
     unittest.main()

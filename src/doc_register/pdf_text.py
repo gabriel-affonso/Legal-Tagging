@@ -95,6 +95,42 @@ def extract_pdf_annex_text(
     return "\n\n".join(chunk for _, chunk in chunks)
 
 
+def extract_pdf_caderneta_text(
+    path: Path,
+    *,
+    start_page: int = 1,
+    max_chars: int | None = None,
+) -> str:
+    """Extract every PDF page for internal-caderneta discovery.
+
+    A caderneta may appear anywhere in a contract.  The caller uses the page
+    markers and the caderneta's own title/labels to select it afterwards, so
+    this function intentionally has no positional assumption or text cutoff.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError("Missing dependency: install pypdf with `pip install -r requirements.txt`.") from exc
+
+    reader = PdfReader(str(path))
+    start_index = min(max(0, start_page - 1), len(reader.pages))
+    chunks: list[str] = []
+    current_chars = 0
+    for page_index in range(start_index, len(reader.pages)):
+        page_text = _normalize_page_text(
+            reader.pages[page_index].extract_text() or "",
+            preserve_layout=True,
+        )
+        if not page_text:
+            continue
+        chunk = f"[Page {page_index + 1}] {page_text}"
+        if max_chars is not None and current_chars + len(chunk) > max_chars and chunks:
+            break
+        chunks.append(chunk)
+        current_chars += len(chunk)
+    return "\n\n".join(chunks)
+
+
 def extract_pdf_layout_text(path: Path, max_pages: int, max_chars: int) -> str:
     """Extract text with page/block/line structure when PyMuPDF is available."""
     try:

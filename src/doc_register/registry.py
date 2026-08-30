@@ -25,6 +25,7 @@ PROPERTY_REGISTER_COLUMNS = (
     "status",
     "reason",
     "document_type",
+    "owner_name",
     "property_name",
     "matrix_article",
     "matrix_section",
@@ -73,6 +74,19 @@ class ExcelRegister:
             return values
 
     def append(self, candidate: PdfCandidate, result: ExtractionResult) -> None:
+        self._write(candidate, result, replace_existing=False)
+
+    def upsert(self, candidate: PdfCandidate, result: ExtractionResult) -> None:
+        """Replace the registered row for a PDF hash, or add it when absent."""
+        self._write(candidate, result, replace_existing=True)
+
+    def _write(
+        self,
+        candidate: PdfCandidate,
+        result: ExtractionResult,
+        *,
+        replace_existing: bool,
+    ) -> None:
         with _workbook_lock(self.path):
             workbook, sheet = self._load()
             operational = {
@@ -89,7 +103,20 @@ class ExcelRegister:
                 if isinstance(value, (dict, list)):
                     value = json.dumps(value, ensure_ascii=False)
                 row.append(value)
-            sheet.append(row)
+            sha_col = REGISTER_COLUMNS.index("sha256") + 1
+            existing_row = next(
+                (
+                    row_index
+                    for row_index in range(2, sheet.max_row + 1)
+                    if str(sheet.cell(row=row_index, column=sha_col).value or "") == candidate.sha256
+                ),
+                None,
+            ) if replace_existing else None
+            if existing_row:
+                for column_index, value in enumerate(row, start=1):
+                    sheet.cell(row=existing_row, column=column_index, value=value)
+            else:
+                sheet.append(row)
             self._format(sheet)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             workbook.save(self.path)

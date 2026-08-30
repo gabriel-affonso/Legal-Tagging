@@ -129,7 +129,7 @@ doc-register property-watch --config config.json
 Ela grava um JSON por PDF em `property_extractions/` (ou no caminho definido
 por `property_extraction_dir`) e uma linha na aba `Property Extraction` do
 mesmo Excel. Não altera a aba principal, o arquivo ou o estado da pipeline
-principal. A saída contém `property_name`, `matrix_article`,
+principal. A saída contém `owner_name`, `property_name`, `matrix_article`,
 `matrix_section`, `area_m2`, confiança, origem dos dados e auditoria.
 
 Primeiro, o processo confirma que o PDF é um contrato de arrendamento;
@@ -159,7 +159,17 @@ cadernetas separadas e com cadernetas presentes no final do próprio PDF.
 O [Step 3.1.3](docs/step3.1.3.md) reforça a leitura de anexos no próprio
 contrato: pesquisa uma faixa mais ampla perto do final, a partir das últimas
 páginas, e identifica o título `Actualização de Caderneta Predial Rústica`
-com `Modelo B`, incluindo as páginas seguintes da caderneta.
+com `Modelo A` ou `Modelo B`, incluindo as páginas seguintes da caderneta.
+
+O [Step 3.2.1](docs/step3.2.1.md) procura a caderneta em **todas** as páginas
+do próprio contrato, sem pressupor a sua posição. Esta regra é partilhada com
+a pipeline principal, que passa a priorizar a caderneta para proprietário,
+identificação, artigo, secção e área. Para atualizar contratos já presentes na aba principal,
+sem criar linhas duplicadas, use:
+
+```bash
+doc-register scan --config config.json --reprocess-cadernetas
+```
 
 Configurações opcionais:
 

@@ -12,6 +12,7 @@ import time
 from typing import Iterable
 
 from ..models import ExtractionResult
+from ..property_intelligence import discover_caderneta_pages, parse_caderneta
 from .name_quality import validate_name_field
 from .ocr_quality import PageQualityReport, analyze_page_quality
 from .property_recovery import recover_property_group
@@ -26,7 +27,7 @@ ROLE_MARKERS = {
     "lessee": re.compile(r"\b(?:de\s+ora\s+em\s+diante|doravante|conjuntamente)\s+designad[oa]s?\s+por\s+arrendat[aá]ri[oa]s?\b|\bna\s+qualidade\s+de\s+arrendat[aá]ri[oa]s?\b", re.I),
 }
 PROPERTY_NAME_RE = (
-    re.compile(r"\b(?:localiza[cç][aã]o\s+do\s+pr[eé]dio|localiza[cç][aã]o|pr[eé]dio\s+denominad[oa]|denominad[oa](?:\s+por)?)\s*[:#-]?\s*[\"'“”«»]?(?P<value>[^\n,;.]{3,100})", re.I),
+    re.compile(r"\b(?:(?:nome\s*/\s*)?localiza[cç][aã]o(?:\s+do)?\s+pr[eé]dio|localiza[cç][aã]o|pr[eé]dio\s+denominad[oa]|denominad[oa](?:\s+por)?)\s*[:#-]?\s*[\"'“”«»]?(?P<value>[^\n,;.]{3,100})", re.I),
     re.compile(r"\b(?:s[ií]tio|lugar|local)\s+de\s+[\"'“”«»]?(?P<value>[^\n,;.]{3,100})", re.I),
 )
 PLACE_RE = {
@@ -124,7 +125,7 @@ class ContractResolutionReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "version": "2.8", "active": self.active,
+            "version": "2.9.1", "active": self.active,
             "document_zones": [item.to_dict() for item in self.zones],
             "page_quality_summary": [item.to_dict() for item in self.page_quality],
             "entities": list(self.entities.values()),
@@ -143,6 +144,7 @@ def prepare_contract_final_resolution(document_text: str) -> ContractResolutionR
     report.active = True
     report.page_quality = analyze_page_quality(document_text)
     report.zones = detect_document_zones(document_text, report.page_quality)
+    _add_internal_caderneta_zone(report, document_text)
     _extract_candidates(report)
     _resolve_entities(report)
     return report
@@ -173,7 +175,17 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
     lessors = _select_many([item for item in report.candidates if item.field == "lessor" and item.contract_role != "lessee" and item.validation_status == "valid"])
     result.lessor = "; ".join(item.normalized_value for item in lessors)
     result.lessor_2 = lessors[1].normalized_value if len(lessors) > 1 else ""
-    result.owner_name = _declared_owner_value(report) or result.owner_name
+    cadastral_owners = _select_many(
+        item for item in report.candidates
+        if item.field == "cadastral_owner" and item.validation_status == "valid"
+    )
+    if cadastral_owners:
+        result.owner_name = "; ".join(item.normalized_value for item in cadastral_owners)
+        report.decisions["owner_name"] = _decision(
+            cadastral_owners[0], result.owner_name, "accepted"
+        )
+    else:
+        result.owner_name = _declared_owner_value(report) or result.owner_name
     if result.rent_frequency and result.rent_frequency != "monthly":
         result.monthly_rent = ""
     if report.conflicts:
@@ -217,6 +229,27 @@ def detect_document_zones(document_text: str, page_quality: list[PageQualityRepo
     return zones or [DocumentZone(None, "unknown", 0.1, [], str(document_text or "")[:1200], quality_by_page.get(None, 0.0), "unknown")]
 
 
+def _add_internal_caderneta_zone(report: ContractResolutionReport, document_text: str) -> None:
+    """Create one authoritative zone from all pages of an internal caderneta."""
+    pages = discover_caderneta_pages(document_text)
+    if not pages:
+        return
+    text_span = "\n\n".join(
+        f"[Page {page.page_number}] {page.text}" for page in pages
+    )
+    first_page = pages[0].page_number
+    quality_by_page = {item.page: item.overall_page_quality for item in report.page_quality}
+    report.zones.append(DocumentZone(
+        page_number=first_page,
+        zone_type="cadastral_record",
+        confidence=0.99,
+        matched_signals=["internal_caderneta_title_or_structure"],
+        text_span=text_span,
+        ocr_quality=sum(quality_by_page.get(page.page_number, 0.7) for page in pages) / len(pages),
+        internal_document="caderneta_predial_rustica",
+    ))
+
+
 def _extract_candidates(report: ContractResolutionReport) -> None:
     for zone in report.zones:
         if zone.zone_type in {"party_identification", "signature_recognition", "landlord_identification_annex", "notification_block", "corporate_registry"}:
@@ -256,6 +289,20 @@ def _extract_party_candidates(report: ContractResolutionReport, zone: DocumentZo
 
 def _extract_property_candidates(report: ContractResolutionReport, zone: DocumentZone) -> None:
     authority_boost = 0.12 if zone.zone_type == "cadastral_record" else 0.0
+    if zone.zone_type == "cadastral_record":
+        caderneta = parse_caderneta(discover_caderneta_pages(zone.text_span))
+        if caderneta.property_name:
+            _add(report, _candidate("property_name", caderneta.property_name, zone, "", "caderneta_property_name", 0.99))
+        if caderneta.matrix_article:
+            _add(report, _candidate("property_article", caderneta.matrix_article, zone, "", "caderneta_matrix_article", 0.99))
+        if caderneta.matrix_section:
+            _add(report, _candidate("property_section", caderneta.matrix_section, zone, "", "caderneta_matrix_section", 0.99))
+        if caderneta.area_m2 is not None:
+            hectares = caderneta.area_m2 / 10_000
+            _add(report, _candidate("property_total_area", f"{hectares:g} hectares", zone, "", "caderneta_total_area", 0.99))
+        if caderneta.owner_name:
+            for name in _names(caderneta.owner_name, "owner_name") or [caderneta.owner_name]:
+                _add(report, _candidate("cadastral_owner", name, zone, "cadastral_owner", "caderneta_holder_name", 0.99))
     group = recover_property_group(zone.text_span)
     if group.article:
         _add(report, _candidate("property_article", group.article, zone, "", "structured_cadastral_article", 0.97 + authority_boost))
@@ -277,10 +324,11 @@ def _extract_property_candidates(report: ContractResolutionReport, zone: Documen
         _add(report, _candidate("property_total_area", _area(match.group(1), match.group(2)), zone, "", "labelled_total_area", 0.94 + authority_boost))
     for match in PARCEL_AREA_RE.finditer(zone.text_span):
         _add(report, _candidate("leased_parcel_area", _area(match.group(1), match.group(2)), zone, "", "labelled_leased_area", 0.83 + authority_boost))
-    for match in re.finditer(r"\b(?:titular(?:es)?|propriet[aá]rio(?:s)?)\s*[:#-]?\s*([^\n]{4,180})", zone.text_span, re.I):
-        for name in _names(match.group(1), "owner_name"):
-            candidate = _candidate("cadastral_owner", name, zone, "cadastral_owner", "cadastral_owner_label", 0.94)
-            _add(report, candidate)
+    if zone.zone_type != "cadastral_record":
+        for match in re.finditer(r"\b(?:titular(?:es)?|propriet[aá]rio(?:s)?)\s*[:#-]?\s*([^\n]{4,180})", zone.text_span, re.I):
+            for name in _names(match.group(1), "owner_name"):
+                candidate = _candidate("cadastral_owner", name, zone, "cadastral_owner", "cadastral_owner_label", 0.94)
+                _add(report, candidate)
 
 
 def _extract_rent_candidates(report: ContractResolutionReport, zone: DocumentZone) -> None:

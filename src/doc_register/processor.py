@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -12,7 +13,8 @@ from .contract_types import apply_contract_type_hints
 from .detectors import detect_signals
 from .models import ExtractionResult, PdfCandidate
 from .ollama_client import OllamaConnectionError, extract_with_ollama
-from .pdf_text import extract_text_with_optional_ocr
+from .pdf_text import extract_pdf_caderneta_text, extract_text_with_optional_ocr, run_ocrmypdf
+from .property_intelligence import discover_caderneta_pages
 from .registry import ExcelRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .ai_reviewer import review_if_needed
@@ -43,9 +45,9 @@ class DocumentProcessor:
         self.config = config
         self.register = ExcelRegister(config.excel_path)
 
-    def scan_once(self) -> int:
+    def scan_once(self, *, reprocess_cadernetas: bool = False) -> int:
         self.config.ensure_directories()
-        existing_hashes = self.register.existing_hashes()
+        existing_hashes = set() if reprocess_cadernetas else self.register.existing_hashes()
         processed = 0
 
         for source_path in self._iter_pdf_files():
@@ -56,7 +58,7 @@ class DocumentProcessor:
                     LOGGER.info("Skipping duplicate PDF: %s", source_path.name)
                     continue
 
-                self._process_candidate(candidate)
+                self._process_candidate(candidate, replace_existing=reprocess_cadernetas)
                 existing_hashes.add(candidate.sha256)
                 processed += 1
             except OllamaConnectionError as exc:
@@ -74,7 +76,10 @@ class DocumentProcessor:
             except Exception as exc:
                 LOGGER.exception("Failed to process %s", source_path)
                 if candidate and candidate.sha256 not in existing_hashes:
-                    self.register.append(candidate, _error_result(exc))
+                    if reprocess_cadernetas:
+                        self.register.upsert(candidate, _error_result(exc))
+                    else:
+                        self.register.append(candidate, _error_result(exc))
                     existing_hashes.add(candidate.sha256)
                 self._move_to_error_dir(source_path)
 
@@ -129,7 +134,7 @@ class DocumentProcessor:
         safe_stem = safe_stem[:80] or "document"
         return self.config.processing_dir / f"{safe_stem}__{digest[:12]}.pdf"
 
-    def _process_candidate(self, candidate: PdfCandidate) -> None:
+    def _process_candidate(self, candidate: PdfCandidate, *, replace_existing: bool = False) -> None:
         started_at = time.monotonic()
         LOGGER.info("Extracting text from %s", candidate.copied_path.name)
 
@@ -151,6 +156,20 @@ class DocumentProcessor:
 
         document_text = _normalize_document_text(extracted_text.text)
         signals = detect_signals(candidate.source_path.name, document_text)
+        if signals.suggested_category == "lease_contract":
+            caderneta_text, caderneta_source = _read_internal_caderneta_text(
+                candidate.copied_path,
+                self.config,
+            )
+            if caderneta_text:
+                document_text = _append_internal_caderneta_text(document_text, caderneta_text)
+                signals = detect_signals(candidate.source_path.name, document_text)
+                LOGGER.info(
+                    "Added internal caderneta search region for %s: chars=%s source=%s",
+                    candidate.copied_path.name,
+                    len(caderneta_text),
+                    caderneta_source,
+                )
         # Step 2.7 runs before the LLM extraction.  For lease candidates the
         # second prompt receives only field-authorized clauses, never a broad
         # document-wide semantic sample.
@@ -301,7 +320,10 @@ class DocumentProcessor:
             # allow a later sanitiser to overwrite its selected candidates.
             entity_resolution=False,
         )
-        self.register.append(candidate, result)
+        if replace_existing:
+            self.register.upsert(candidate, result)
+        else:
+            self.register.append(candidate, result)
         self._archive_candidate(candidate)
 
         LOGGER.info(
@@ -330,6 +352,37 @@ class DocumentProcessor:
                 "Could not copy failed file to error directory: %s",
                 source_path,
             )
+
+
+def _read_internal_caderneta_text(path: Path, config: AppConfig) -> tuple[str, str]:
+    """Read every page, creating OCR only if native text has no caderneta."""
+    cached_ocr = config.ocr_dir / f"{path.stem}__ocr.pdf"
+    if cached_ocr.is_file():
+        return extract_pdf_caderneta_text(cached_ocr), "cached_ocr_pdf"
+
+    native_text = extract_pdf_caderneta_text(path)
+    if discover_caderneta_pages(native_text) or not config.ocr_enabled:
+        return native_text, "native_pdf"
+
+    try:
+        run_ocrmypdf(
+            path,
+            cached_ocr,
+            language=config.ocr_language,
+            timeout_seconds=config.ocr_timeout_seconds,
+        )
+        if cached_ocr.is_file():
+            return extract_pdf_caderneta_text(cached_ocr), "generated_ocr_pdf"
+    except (FileNotFoundError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        LOGGER.warning("Could not OCR internal caderneta region for %s: %s", path.name, exc)
+    return native_text, "native_pdf"
+
+
+def _append_internal_caderneta_text(document_text: str, caderneta_text: str) -> str:
+    """Preserve the contract's first pages and append the later annex evidence."""
+    if not document_text:
+        return caderneta_text
+    return f"{document_text}\n\n[INTERNAL CADENETA SEARCH REGION]\n{caderneta_text}"
 
 
 def _build_extraction_context(text: str, max_chars: int) -> str:

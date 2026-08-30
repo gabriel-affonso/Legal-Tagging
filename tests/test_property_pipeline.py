@@ -46,6 +46,8 @@ def load_tests(
         test_sp_sequence_chain_uses_crp_filename_when_ocr_is_weak,
         test_same_pdf_caderneta_is_reconciled_with_contract,
         test_title_and_model_b_identify_same_pdf_caderneta_near_document_end,
+        test_model_a_caderneta_recovers_owner_from_later_page,
+        test_caderneta_title_is_found_before_the_usual_annex_pages,
         test_property_pack_matches_separate_caderneta_by_identifier,
         test_property_pack_rejects_ambiguous_candidates,
         test_discovers_and_parses_caderneta_in_document_tail,
@@ -388,6 +390,58 @@ def test_title_and_model_b_identify_same_pdf_caderneta_near_document_end() -> No
     assert values.matrix_article == "456"
     assert values.matrix_section == "M"
     assert values.area_m2 == 25000
+
+
+def test_model_a_caderneta_recovers_owner_from_later_page() -> None:
+    caderneta = """
+    [Page 22] CADERNETA PREDIAL RÚSTICA
+    Modelo A
+    [Page 23] IDENTIFICAÇÃO DO PRÉDIO
+    SECÇÃO: M
+    ARTIGO MATRICIAL Nº: 456
+    NOME/LOCALIZAÇÃO PRÉDIO: Herdade da Fonte
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 2,5
+    [Page 24] TITULARES
+    Identificação fiscal: 123456789
+    Nome: Ana Maria da Silva
+    Morada: Caminho da Fonte
+    Tipo de titular: Propriedade plena
+    """
+
+    pages = discover_caderneta_pages(caderneta)
+    values = parse_caderneta(pages)
+
+    assert [page.page_number for page in pages] == [22, 23, 24]
+    assert values.owner_name == "Ana Maria da Silva"
+    assert values.property_name == "Herdade da Fonte"
+    assert values.matrix_article == "456"
+    assert values.matrix_section == "M"
+    assert values.area_m2 == 25000
+
+
+def test_caderneta_title_is_found_before_the_usual_annex_pages() -> None:
+    document = """
+    [Page 1] CONTRATO DE ARRENDAMENTO
+    [Page 4] CADERNETA PREDIAL RÚSTICA
+    MODELO B
+    [Page 5] IDENTIFICAÇÃO DO PRÉDIO
+    SECÇÃO: K
+    ARTIGO MATRICIAL Nº: 123
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 1,5
+    [Page 6] TITULARES
+    Nome: Maria da Silva
+    Morada: Rua da Ribeira
+    """
+
+    pages = discover_caderneta_pages(document)
+    values = parse_caderneta(pages)
+
+    assert [page.page_number for page in pages] == [4, 5, 6]
+    assert values.matrix_article == "123"
+    assert values.owner_name == "Maria da Silva"
 
 
 def test_discovers_and_parses_caderneta_in_document_tail() -> None:

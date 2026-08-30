@@ -32,6 +32,7 @@ class CadernetaValues:
     matrix_article: str = ""
     matrix_section: str = ""
     area_m2: int | float | None = None
+    owner_name: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +40,7 @@ class CadernetaValues:
             "matrix_article": self.matrix_article or None,
             "matrix_section": self.matrix_section or None,
             "area_m2": self.area_m2,
+            "owner_name": self.owner_name or None,
         }
 
     def validated(self) -> "CadernetaValues":
@@ -50,6 +52,7 @@ class CadernetaValues:
             matrix_article=article if _valid_article(article) else "",
             matrix_section=section if _valid_section(section) else "",
             area_m2=self.area_m2 if self.area_m2 and self.area_m2 > 0 else None,
+            owner_name=_clean_owner_name(self.owner_name),
         )
 
 
@@ -60,6 +63,7 @@ def recovery_required(result: PropertyExtraction) -> bool:
         or not result.matrix_article
         or not result.matrix_section
         or result.area_m2 is None
+        or not result.owner_name
         or not _valid_article(result.matrix_article)
         or not _valid_section(result.matrix_section)
     )
@@ -104,9 +108,18 @@ def parse_caderneta(pages: list[AnnexPage]) -> CadernetaValues:
             r"NOME\s*/?\s*LOCALIZACAO(?:\s+DO)?\s+PREDIO",
             r"ELEMENTOS\s+DO\s+PREDIO|ARTIGO\s+MATRICIAL|MATRIZ\s+PREDIAL|SECCAO|TITULARES",
         ),
-        matrix_article=_label_value(text, r"ARTIGO\s+MATRICIAL(?:\s+N[Oº.]*)?", r"SECCAO|ELEMENTOS\s+DO\s+PREDIO|TITULARES"),
-        matrix_section=_label_value(text, r"SECCAO", r"ELEMENTOS\s+DO\s+PREDIO|TITULARES|AREA").upper(),
+        matrix_article=_label_value(
+            text,
+            r"ARTIGO\s+MATRICIAL(?:\s+N[Oº.]*)?",
+            r"NOME\s*/?\s*LOCALIZACAO|ELEMENTOS\s+DO\s+PREDIO|SECCAO|TITULARES|AREA",
+        ),
+        matrix_section=_label_value(
+            text,
+            r"SECCAO",
+            r"ARTIGO\s+MATRICIAL|NOME\s*/?\s*LOCALIZACAO|ELEMENTOS\s+DO\s+PREDIO|TITULARES|AREA",
+        ).upper(),
         area_m2=_caderneta_area(text),
+        owner_name=_caderneta_owner(text),
     ).validated()
 
 
@@ -172,6 +185,17 @@ def reconcile_property(
         else:
             evidence[field] = {"value": None, "source": None, "confidence": 0}
 
+    owner_name = caderneta.owner_name
+    if owner_name:
+        evidence["owner_name"] = {
+            "value": owner_name,
+            "source": "caderneta_predial",
+            "confidence": 99,
+        }
+        recovered_fields.append("owner_name")
+    else:
+        evidence["owner_name"] = {"value": None, "source": None, "confidence": 0}
+
     confidence_before = contract.confidence
     confidence_after = (
         _confidence_v3(final, has_agreement=agreements > 0)
@@ -198,6 +222,7 @@ def reconcile_property(
         matrix_article=str(final["matrix_article"] or ""),
         matrix_section=str(final["matrix_section"] or ""),
         area_m2=final["area_m2"],
+        owner_name=owner_name,
         confidence=confidence_after,
         candidate_score=max(contract.candidate_score, max((page.caderneta_score for page in pages), default=0)),
         evidence_model=evidence,
@@ -241,7 +266,7 @@ def _caderneta_score(text: str) -> int:
     indicators = (
         (r"\bactualizacao\s+(?:de\s+)?caderneta\s+predial\s+rustica\b", 70),
         (r"\bcaderneta\s+predial\s+rustica\b", 45),
-        (r"\bmodelo\s*[-:]?\s*B\b", 30),
+        (r"\bmodelo\s*[-:]?\s*[AB]\b", 30),
         (r"\bcaderneta\s+predial\b", 30),
         (r"\bidentificacao\s+do\s+predio\b", 20),
         (r"\bartigo\s+matricial\b", 20),
@@ -258,7 +283,7 @@ def _has_caderneta_title(text: str) -> bool:
         r"\b(?:actualizacao\s+(?:de\s+)?)?caderneta\s+predial\s+rustica\b",
         normalized,
         re.IGNORECASE,
-    )) and bool(re.search(r"\bmodelo\s*[-:]?\s*B\b", normalized, re.IGNORECASE))
+    )) and bool(re.search(r"\bmodelo\s*[-:]?\s*[AB]\b", normalized, re.IGNORECASE))
 
 
 def _label_value(text: str, label: str, stop: str) -> str:
@@ -288,6 +313,35 @@ def _caderneta_area(text: str) -> int | float | None:
     if square_meters:
         return _decimal_number(square_meters.group(1))
     return None
+
+
+def _caderneta_owner(text: str) -> str:
+    normalized = _fold(text)
+    holder = re.search(r"\btitulares?\b(?P<value>.*?)(?=\b(?:elementos\s+para\s+a\s+validacao|emitido\s+via|codigo\s+de\s+validacao)\b|$)", normalized, re.IGNORECASE | re.DOTALL)
+    scope = text[holder.start("value"):holder.end("value")] if holder else text
+    for pattern in (
+        r"\bnome\s*[:\-]\s*(.+?)(?=\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b|$)",
+        r"\b(?:titular|propriet[aá]rio|sujeito\s+passivo)\s*[:\-]\s*(.+?)(?=\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b|$)",
+    ):
+        match = re.search(pattern, scope, re.IGNORECASE | re.DOTALL)
+        if match:
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" .,:;-\n")
+            cleaned = _clean_owner_name(value)
+            if cleaned:
+                return cleaned
+    return ""
+
+
+def _clean_owner_name(value: str) -> str:
+    value = re.sub(r"\s+", " ", str(value or "")).strip(" .,:;-\n")
+    if len(value) < 4:
+        return ""
+    normalized = _fold(value)
+    if normalized in {"NOME", "TITULAR", "TITULARES", "PROPRIETARIO", "PROPRIETARIOS"}:
+        return ""
+    if re.search(r"\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b", normalized, re.IGNORECASE):
+        return ""
+    return value[:160]
 
 
 def _decimal_number(value: str) -> float | None:

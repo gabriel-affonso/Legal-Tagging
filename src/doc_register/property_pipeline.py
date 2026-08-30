@@ -45,6 +45,7 @@ class PropertyExtraction:
     matrix_article: str = ""
     matrix_section: str = ""
     area_m2: int | float | None = None
+    owner_name: str = ""
     confidence: int = 0
     source_section: str = ""
     source_clause: str = ""
@@ -64,6 +65,7 @@ class PropertyExtraction:
             "matrix_article": self.matrix_article or None,
             "matrix_section": self.matrix_section or None,
             "area_m2": self.area_m2,
+            "owner_name": self.owner_name or None,
             "confidence": self.confidence,
             "source": {
                 "section": self.source_section or None,

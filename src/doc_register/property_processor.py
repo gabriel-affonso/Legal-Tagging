@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .config import AppConfig
 from .ollama_client import extract_property_with_ollama
-from .pdf_text import extract_pdf_annex_text, extract_text_with_optional_ocr
+from .pdf_text import extract_pdf_caderneta_text, extract_text_with_optional_ocr
 from .property_intelligence import (
     discover_caderneta_pages,
     parse_caderneta,
@@ -163,6 +163,7 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "status": result.get("status", ""),
         "reason": result.get("reason", ""),
         "document_type": result.get("document_type", ""),
+        "owner_name": result.get("owner_name", ""),
         "property_name": result.get("property_name", ""),
         "matrix_article": result.get("matrix_article", ""),
         "matrix_section": result.get("matrix_section", ""),
@@ -194,7 +195,7 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
     }
 
 
-PIPELINE_VERSION = "3.1.3"
+PIPELINE_VERSION = "3.2.1"
 
 
 def _with_property_pack_audit(result, match: PropertyPackMatch):
@@ -221,10 +222,10 @@ def _reconcile_property_evidence(result, match: PropertyPackMatch, annex_pages, 
 
 
 def _read_annex_text(path: Path, config: AppConfig) -> str:
-    """Read the broad end region from its OCR PDF when available."""
+    """Read all pages so an internal caderneta can be found anywhere."""
     cached_ocr = config.ocr_dir / f"{path.stem}__ocr.pdf"
     source = cached_ocr if cached_ocr.is_file() else path
-    return extract_pdf_annex_text(source)
+    return extract_pdf_caderneta_text(source)
 
 
 def _audit_value(result: dict[str, object], key: str) -> object:

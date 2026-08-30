@@ -41,6 +41,11 @@ def main() -> None:
     )
     parser.add_argument("--config", default="config.json", help="Path to configuration JSON.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument(
+        "--reprocess-cadernetas",
+        action="store_true",
+        help="Reprocess existing main-register PDFs and replace their rows to apply internal caderneta extraction.",
+    )
     args = parser.parse_args()
 
     config = AppConfig.from_json(Path(args.config).expanduser().resolve())
@@ -66,7 +71,7 @@ def main() -> None:
     processor = DocumentProcessor(config)
 
     if args.command == "scan":
-        processed = processor.scan_once()
+        processed = processor.scan_once(reprocess_cadernetas=args.reprocess_cadernetas)
         logging.info("Scan complete. Processed %s new PDF(s).", processed)
         return
 
