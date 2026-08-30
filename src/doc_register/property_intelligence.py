@@ -16,7 +16,7 @@ from .property_pipeline import (
 
 
 CADENETA_THRESHOLD = 60
-CADENETA_CONTEXT_PAGES = 3
+CADENETA_CONTEXT_PAGES = 4
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,17 @@ def recovery_required(result: PropertyExtraction) -> bool:
 
 
 def discover_caderneta_pages(text: str) -> list[AnnexPage]:
+    """Return all identified caderneta pages for legacy single-pack callers."""
+    return [page for group in discover_caderneta_groups(text) for page in group]
+
+
+def discover_caderneta_groups(text: str) -> list[list[AnnexPage]]:
+    """Identify each internal caderneta as a separate page group.
+
+    A contract may contain several property packs.  Returning independent
+    groups prevents fields from different cadernetas being merged into a
+    single property decision.
+    """
     pages = _split_pages(text)
     if not pages:
         return []
@@ -77,27 +88,36 @@ def discover_caderneta_pages(text: str) -> list[AnnexPage]:
         AnnexPage(page_number=page_number, text=page_text, caderneta_score=_caderneta_score(page_text))
         for page_number, page_text in pages
     ]
-    title_indexes = {
+    title_indexes = sorted(
         index
         for index, page in enumerate(scored_pages)
         if _has_caderneta_title(page.text)
-    }
-    matched_indexes = {
+    )
+    strong_indexes = sorted(
         index
         for index, page in enumerate(scored_pages)
         if page.caderneta_score >= CADENETA_THRESHOLD
-    }
-    # The title page often contains only "Actualização de Caderneta Predial
-    # Rústica — Modelo B".  Include its nearby pages, where the structured
-    # article, section, name and area are normally printed.
-    for title_index in title_indexes:
-        matched_indexes.update(
-            range(
-                title_index,
-                min(len(scored_pages), title_index + CADENETA_CONTEXT_PAGES),
-            )
-        )
-    return [page for index, page in enumerate(scored_pages) if index in matched_indexes]
+    )
+    anchors = title_indexes or _contiguous_group_starts(strong_indexes)
+    groups: list[list[AnnexPage]] = []
+    for position, start in enumerate(anchors):
+        stop = anchors[position + 1] if position + 1 < len(anchors) else len(scored_pages)
+        included = set(range(start, min(stop, start + CADENETA_CONTEXT_PAGES)))
+        included.update(index for index in strong_indexes if start <= index < stop)
+        group = [page for index, page in enumerate(scored_pages) if index in included]
+        if group:
+            groups.append(group)
+    return groups
+
+
+def _contiguous_group_starts(indexes: list[int]) -> list[int]:
+    starts: list[int] = []
+    previous: int | None = None
+    for index in indexes:
+        if previous is None or index > previous + 1:
+            starts.append(index)
+        previous = index
+    return starts
 
 
 def parse_caderneta(pages: list[AnnexPage]) -> CadernetaValues:
@@ -398,6 +418,7 @@ __all__ = [
     "AnnexPage",
     "CadernetaValues",
     "discover_caderneta_pages",
+    "discover_caderneta_groups",
     "parse_caderneta",
     "recover_from_annexes",
     "recovery_required",

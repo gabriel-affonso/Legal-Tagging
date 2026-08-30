@@ -12,7 +12,7 @@ import time
 from typing import Iterable
 
 from ..models import ExtractionResult
-from ..property_intelligence import discover_caderneta_pages, parse_caderneta
+from ..property_intelligence import discover_caderneta_groups, discover_caderneta_pages, parse_caderneta
 from .name_quality import validate_name_field
 from .ocr_quality import PageQualityReport, analyze_page_quality
 from .property_recovery import recover_property_group
@@ -105,11 +105,13 @@ class ContractResolutionReport:
         """Field-specific zone bundles; no arbitrary full-document fallback."""
         profiles = (
             ("PARTY RESOLUTION", ("party_identification", "signature_recognition", "landlord_identification_annex", "notification_block", "corporate_registry")),
-            ("PROPERTY RESOLUTION", ("cadastral_record", "land_registry_certificate", "property_recital", "object_clause", "parcel_plan")),
+            ("PROPERTY RESOLUTION", ("land_registry_certificate", "property_recital", "object_clause", "parcel_plan")),
             ("DATES AND TERMS", ("signature_page", "signature_recognition", "term_clause", "rent_clause")),
         )
         chunks: list[str] = []
-        remaining = max_chars
+        cadastral_summary = _cadastral_summary_for_llm(self)
+        summary_budget = min(len(cadastral_summary) + 2, max_chars) if cadastral_summary else 0
+        remaining = max(0, max_chars - summary_budget)
         for label, wanted in profiles:
             texts = [zone.text_span for zone in self.zones if zone.zone_type in wanted]
             if not texts:
@@ -121,6 +123,8 @@ class ContractResolutionReport:
                 remaining -= len(rendered) + 2
             if remaining <= 0:
                 break
+        if cadastral_summary:
+            chunks.append(cadastral_summary[:summary_budget].rstrip())
         return "\n\n".join(chunks)
 
     def to_dict(self) -> dict[str, object]:
@@ -156,7 +160,7 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
         return result
     _add_existing_output_candidates(result, report)
     _resolve_entities(report)
-    _detect_ownership_conflicts(report)
+    _detect_cadastral_conflicts(report)
     for field_name in _field_names():
         candidates = [candidate for candidate in report.candidates if candidate.field == field_name and candidate.validation_status == "valid"]
         if field_name == "lessor":
@@ -190,7 +194,10 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
         result.monthly_rent = ""
     if report.conflicts:
         result.human_review_required = "yes"
-        result.review_reason = "; ".join(part for part in (result.review_reason, "ownership_source_conflict") if part)
+        conflict_reasons = "; ".join(
+            str(item.get("type")) for item in report.conflicts if item.get("type")
+        )
+        result.review_reason = "; ".join(part for part in (result.review_reason, conflict_reasons) if part)
     report.unresolved_fields = [name for name in ("lessee", "property_article", "property_section") if not str(getattr(result, name, "") or "")]
     _attach(result, report)
     return result
@@ -230,24 +237,39 @@ def detect_document_zones(document_text: str, page_quality: list[PageQualityRepo
 
 
 def _add_internal_caderneta_zone(report: ContractResolutionReport, document_text: str) -> None:
-    """Create one authoritative zone from all pages of an internal caderneta."""
-    pages = discover_caderneta_pages(document_text)
-    if not pages:
+    """Create one authoritative zone for every internal caderneta."""
+    groups = discover_caderneta_groups(document_text)
+    if not groups:
         return
-    text_span = "\n\n".join(
-        f"[Page {page.page_number}] {page.text}" for page in pages
-    )
-    first_page = pages[0].page_number
+    internal_pages = {
+        page.page_number for group in groups for page in group
+    }
+    # The grouped zone replaces page-by-page cadastral zones so values from two
+    # different cadernetas cannot be mixed by the generic extractor.
+    report.zones = [
+        zone for zone in report.zones
+        if not (
+            zone.page_number in internal_pages
+            and zone.zone_type in {
+                "cadastral_record", "property_recital", "object_clause",
+                "parcel_plan", "land_registry_certificate",
+            }
+        )
+    ]
     quality_by_page = {item.page: item.overall_page_quality for item in report.page_quality}
-    report.zones.append(DocumentZone(
-        page_number=first_page,
-        zone_type="cadastral_record",
-        confidence=0.99,
-        matched_signals=["internal_caderneta_title_or_structure"],
-        text_span=text_span,
-        ocr_quality=sum(quality_by_page.get(page.page_number, 0.7) for page in pages) / len(pages),
-        internal_document="caderneta_predial_rustica",
-    ))
+    for index, pages in enumerate(groups, start=1):
+        text_span = "\n\n".join(
+            f"[Page {page.page_number}] {page.text}" for page in pages
+        )
+        report.zones.append(DocumentZone(
+            page_number=pages[0].page_number,
+            zone_type="cadastral_record",
+            confidence=0.99,
+            matched_signals=["internal_caderneta_title_or_structure"],
+            text_span=text_span,
+            ocr_quality=sum(quality_by_page.get(page.page_number, 0.7) for page in pages) / len(pages),
+            internal_document=f"caderneta_predial_rustica_{index:02d}",
+        ))
 
 
 def _extract_candidates(report: ContractResolutionReport) -> None:
@@ -356,7 +378,7 @@ def _candidate(field_name: str, value: str, zone: DocumentZone, role: str, patte
     return FactCandidate(
         candidate_id="", field=field_name, raw_value=value, normalized_value=normalized,
         entity_id="", entity_type="organization" if _is_company(normalized) else "person",
-        contract_role=role, source_type=_internal_document(zone.zone_type), source_zone=zone.zone_type,
+        contract_role=role, source_type=zone.internal_document or _internal_document(zone.zone_type), source_zone=zone.zone_type,
         page=zone.page_number, text_span=zone.text_span[:600], matched_pattern=pattern,
         ocr_quality=zone.ocr_quality, source_authority=authority, semantic_confidence=semantic,
         validation_status="valid" if valid else "blocked", score_components={"authority": authority, "semantic": semantic, "ocr": zone.ocr_quality}, final_score=score,
@@ -412,15 +434,102 @@ def _add_existing_output_candidates(result: ExtractionResult, report: ContractRe
         _add(report, candidate)
 
 
-def _detect_ownership_conflicts(report: ContractResolutionReport) -> None:
+def _cadastral_summary_for_llm(report: ContractResolutionReport) -> str:
+    """Provide verified facts, never raw caderneta OCR, to the local LLM."""
+    groups = {
+        candidate.source_type
+        for candidate in report.candidates
+        if candidate.source_type.startswith("caderneta_predial_rustica_")
+    }
+    if len(groups) > 1:
+        return "[FACTOS CADASTRAIS: existem várias cadernetas; não inferir campos cadastrais.]"
+    values: dict[str, list[str]] = {}
+    labels = {
+        "cadastral_owner": "titular cadastral",
+        "property_name": "imóvel",
+        "property_article": "artigo matricial",
+        "property_section": "secção",
+        "property_total_area": "área total",
+    }
+    for candidate in report.candidates:
+        if not candidate.source_type.startswith("caderneta_predial_rustica_"):
+            continue
+        if candidate.validation_status != "valid" or candidate.field not in labels:
+            continue
+        values.setdefault(labels[candidate.field], []).append(candidate.normalized_value)
+    if not values:
+        return ""
+    lines = ["[FACTOS CADASTRAIS VERIFICADOS — NÃO REINTERPRETAR NEM SUBSTITUIR]"]
+    for label, items in values.items():
+        lines.append(f"{label}: {'; '.join(dict.fromkeys(items))}")
+    return "\n".join(lines)
+
+
+def _detect_cadastral_conflicts(report: ContractResolutionReport) -> None:
+    internal_groups = {
+        zone.internal_document
+        for zone in report.zones
+        if zone.internal_document.startswith("caderneta_predial_rustica_")
+    }
+    if len(internal_groups) > 1:
+        report.conflicts.append({
+            "type": "multiple_internal_cadernetas_unresolved",
+            "caderneta_count": len(internal_groups),
+            "requires_review": True,
+        })
+        _block_internal_caderneta_candidates(report)
+        return
+
+    for field_name in ("property_name", "property_article", "property_section", "property_total_area"):
+        cadastral_values = {
+            normalize_text(item.normalized_value): item.normalized_value
+            for item in report.candidates
+            if item.field == field_name
+            and item.validation_status == "valid"
+            and item.source_type.startswith("caderneta_predial_rustica_")
+        }
+        contract_values = {
+            normalize_text(item.normalized_value): item.normalized_value
+            for item in report.candidates
+            if item.field == field_name
+            and item.validation_status == "valid"
+            and not item.source_type.startswith("caderneta_predial_rustica_")
+            and item.source_type != "legacy"
+        }
+        if cadastral_values and contract_values and set(cadastral_values) != set(contract_values):
+            report.conflicts.append({
+                "type": "contract_caderneta_field_conflict",
+                "field": field_name,
+                "contract_values": sorted(contract_values.values()),
+                "caderneta_values": sorted(cadastral_values.values()),
+                "requires_review": True,
+            })
+
     lessors = {normalize_text(item.normalized_value) for item in report.candidates if item.field == "lessor" and item.validation_status == "valid"}
-    cadastral = {normalize_text(item.normalized_value) for item in report.candidates if item.field == "cadastral_owner" and item.validation_status == "valid"}
+    cadastral = {
+        normalize_text(item.normalized_value)
+        for item in report.candidates
+        if item.field == "cadastral_owner"
+        and item.validation_status == "valid"
+        and item.source_type.startswith("caderneta_predial_rustica_")
+    }
     if lessors and cadastral and lessors != cadastral:
         report.conflicts.append({"type": "ownership_source_conflict", "declared_owners": sorted(lessors), "cadastral_owners": sorted(cadastral), "requires_review": True})
     for entity in report.entities.values():
         roles = {item["role"] for item in entity["roles"]}
         if "lessor" in roles and "lessee" in roles:
             report.conflicts.append({"type": "dual_contract_role", "entity_id": entity["entity_id"], "requires_review": True})
+
+
+def _block_internal_caderneta_candidates(report: ContractResolutionReport) -> None:
+    for index, candidate in enumerate(report.candidates):
+        if not candidate.source_type.startswith("caderneta_predial_rustica_"):
+            continue
+        report.candidates[index] = FactCandidate(**{
+            **asdict(candidate),
+            "validation_status": "blocked",
+            "rejection_reason": "multiple_internal_cadernetas_unresolved",
+        })
 
 
 def _select_one(candidates: Iterable[FactCandidate]) -> FactCandidate | None:
@@ -593,6 +702,25 @@ def _attach(result: ExtractionResult, report: ContractResolutionReport) -> None:
     raw = result.raw_json if isinstance(result.raw_json, dict) else {}
     result.raw_json = dict(raw)
     result.raw_json["step2_7_final_resolution"] = report.to_dict()
+    internal_zones = [
+        zone for zone in report.zones
+        if zone.internal_document.startswith("caderneta_predial_rustica_")
+    ]
+    result.cadastral_evidence_status = (
+        "multiple_internal_cadernetas_unresolved"
+        if len(internal_zones) > 1
+        else "internal_caderneta_selected"
+        if internal_zones
+        else "not_found"
+    )
+    result.cadastral_evidence_pages = "; ".join(
+        str(zone.page_number) for zone in internal_zones if zone.page_number is not None
+    )
+    result.cadastral_conflicts = "; ".join(
+        str(item.get("type"))
+        for item in report.conflicts
+        if item.get("type")
+    )
 
 
 def calculate_contract_metrics(expected: dict[str, str], result: ExtractionResult) -> dict[str, object]:

@@ -115,6 +115,58 @@ class Step28Tests(unittest.TestCase):
         self.assertEqual(result.property_section, "M")
         self.assertEqual(result.property_total_area, "2.5 hectares")
         self.assertEqual(result.owner_name, "Ana Maria da Silva")
+        llm_context = report.context_for_llm(max_chars=2000)
+        self.assertIn("FACTOS CADASTRAIS VERIFICADOS", llm_context)
+        self.assertIn("artigo matricial: 456", llm_context)
+        self.assertNotIn("IDENTIFICAÇÃO DO PRÉDIO", llm_context)
+
+    def test_caderneta_conflict_is_visible_and_cadastral_value_wins(self) -> None:
+        document = """[Page 1] CONTRATO DE ARRENDAMENTO
+        Senhorio e Arrendatário acordam a renda anual.
+        O prédio denominado por Quinta Antiga está inscrito sob o artigo 999, secção M.
+        [Page 4] CADERNETA PREDIAL RÚSTICA
+        Modelo A
+        [Page 5] IDENTIFICAÇÃO DO PRÉDIO
+        SECÇÃO: M
+        ARTIGO MATRICIAL Nº: 456
+        NOME/LOCALIZAÇÃO PRÉDIO: Herdade da Fonte
+        ELEMENTOS DO PRÉDIO
+        ÁREA TOTAL (HA): 2,5
+        """
+        report = prepare_contract_final_resolution(document)
+        result = apply_contract_final_resolution(
+            ExtractionResult(document_category="lease_contract"), report
+        )
+
+        self.assertEqual(result.property_article, "456")
+        self.assertEqual(result.property_name, "Herdade da Fonte")
+        self.assertEqual(result.human_review_required, "yes")
+        self.assertIn("contract_caderneta_field_conflict", result.cadastral_conflicts)
+
+    def test_multiple_internal_cadernetas_are_not_merged_into_one_property(self) -> None:
+        document = """[Page 1] CONTRATO DE ARRENDAMENTO
+        Senhorio e Arrendatário acordam a renda anual.
+        [Page 4] CADERNETA PREDIAL RÚSTICA
+        Modelo A
+        [Page 5] IDENTIFICAÇÃO DO PRÉDIO
+        SECÇÃO: K
+        ARTIGO MATRICIAL Nº: 123
+        NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
+        [Page 12] CADERNETA PREDIAL RÚSTICA
+        Modelo B
+        [Page 13] IDENTIFICAÇÃO DO PRÉDIO
+        SECÇÃO: M
+        ARTIGO MATRICIAL Nº: 456
+        NOME/LOCALIZAÇÃO PRÉDIO: Herdade da Fonte
+        """
+        report = prepare_contract_final_resolution(document)
+        result = apply_contract_final_resolution(
+            ExtractionResult(document_category="lease_contract"), report
+        )
+
+        self.assertEqual(result.property_article, "")
+        self.assertEqual(result.cadastral_evidence_status, "multiple_internal_cadernetas_unresolved")
+        self.assertIn("multiple_internal_cadernetas_unresolved", result.cadastral_conflicts)
 
 
 if __name__ == "__main__":

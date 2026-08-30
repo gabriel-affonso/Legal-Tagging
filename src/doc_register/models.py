@@ -105,6 +105,9 @@ class ExtractionResult:
     ai_review_duration_seconds: str = ""
     ai_review_reason: str = ""
     human_review_required: str = ""
+    cadastral_evidence_status: str = ""
+    cadastral_evidence_pages: str = ""
+    cadastral_conflicts: str = ""
     deterministic_json: dict[str, Any] = field(default_factory=dict)
     llm_json: dict[str, Any] = field(default_factory=dict)
     raw_json: dict[str, Any] = field(default_factory=dict)

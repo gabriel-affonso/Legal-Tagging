@@ -14,7 +14,7 @@ from .detectors import detect_signals
 from .models import ExtractionResult, PdfCandidate
 from .ollama_client import OllamaConnectionError, extract_with_ollama
 from .pdf_text import extract_pdf_caderneta_text, extract_text_with_optional_ocr, run_ocrmypdf
-from .property_intelligence import discover_caderneta_pages
+from .property_intelligence import discover_caderneta_groups
 from .registry import ExcelRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .ai_reviewer import review_if_needed
@@ -155,21 +155,34 @@ class DocumentProcessor:
             LOGGER.warning("%s: %s", candidate.copied_path.name, extracted_text.notes)
 
         document_text = _normalize_document_text(extracted_text.text)
+        # Search every PDF for a native/cached-OCR caderneta before deciding
+        # whether the primary pipeline should treat it as a lease annex.
+        caderneta_text, caderneta_source = _read_internal_caderneta_text(
+            candidate.copied_path,
+            self.config,
+            allow_ocr=False,
+        )
+        caderneta_found = bool(discover_caderneta_groups(caderneta_text))
+        if caderneta_found:
+            document_text = _append_internal_caderneta_text(document_text, caderneta_text)
         signals = detect_signals(candidate.source_path.name, document_text)
-        if signals.suggested_category == "lease_contract":
+        if signals.suggested_category == "lease_contract" and not caderneta_found:
             caderneta_text, caderneta_source = _read_internal_caderneta_text(
                 candidate.copied_path,
                 self.config,
+                allow_ocr=True,
             )
-            if caderneta_text:
+            caderneta_found = bool(discover_caderneta_groups(caderneta_text))
+            if caderneta_found:
                 document_text = _append_internal_caderneta_text(document_text, caderneta_text)
                 signals = detect_signals(candidate.source_path.name, document_text)
-                LOGGER.info(
-                    "Added internal caderneta search region for %s: chars=%s source=%s",
-                    candidate.copied_path.name,
-                    len(caderneta_text),
-                    caderneta_source,
-                )
+        if caderneta_found:
+            LOGGER.info(
+                "Added internal caderneta search region for %s: chars=%s source=%s",
+                candidate.copied_path.name,
+                len(caderneta_text),
+                caderneta_source,
+            )
         # Step 2.7 runs before the LLM extraction.  For lease candidates the
         # second prompt receives only field-authorized clauses, never a broad
         # document-wide semantic sample.
@@ -354,14 +367,19 @@ class DocumentProcessor:
             )
 
 
-def _read_internal_caderneta_text(path: Path, config: AppConfig) -> tuple[str, str]:
+def _read_internal_caderneta_text(
+    path: Path,
+    config: AppConfig,
+    *,
+    allow_ocr: bool,
+) -> tuple[str, str]:
     """Read every page, creating OCR only if native text has no caderneta."""
     cached_ocr = config.ocr_dir / f"{path.stem}__ocr.pdf"
     if cached_ocr.is_file():
         return extract_pdf_caderneta_text(cached_ocr), "cached_ocr_pdf"
 
     native_text = extract_pdf_caderneta_text(path)
-    if discover_caderneta_pages(native_text) or not config.ocr_enabled:
+    if discover_caderneta_groups(native_text) or not allow_ocr or not config.ocr_enabled:
         return native_text, "native_pdf"
 
     try:

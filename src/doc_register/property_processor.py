@@ -13,7 +13,8 @@ from .config import AppConfig
 from .ollama_client import extract_property_with_ollama
 from .pdf_text import extract_pdf_caderneta_text, extract_text_with_optional_ocr
 from .property_intelligence import (
-    discover_caderneta_pages,
+    AnnexPage,
+    discover_caderneta_groups,
     parse_caderneta,
     reconcile_property,
     recover_from_annexes,
@@ -70,11 +71,21 @@ class PropertyExtractionProcessor:
                     pack_match = pack_discovery.find_for_contract(path, extracted.text, result)
                     result = _with_property_pack_audit(result, pack_match)
                     annex_text = _read_annex_text(path, self.config)
-                    annex_pages = discover_caderneta_pages(annex_text)
+                    annex_groups = discover_caderneta_groups(annex_text)
+                    annex_pages, internal_caderneta_status = _select_internal_caderneta(
+                        result, annex_groups,
+                    )
+                    result = _with_internal_caderneta_audit(
+                        result, annex_groups, internal_caderneta_status,
+                    )
                     result = _reconcile_property_evidence(result, pack_match, annex_pages, path.name)
                     if not pack_match.caderneta_values and not annex_pages:
                         result = recover_from_annexes(result, "")
-                    if recovery_required(result) and self.config.property_llm_enabled:
+                    if (
+                        internal_caderneta_status != "multiple_cadernetas_unresolved"
+                        and recovery_required(result)
+                        and self.config.property_llm_enabled
+                    ):
                         llm_result = PropertyExtractionPipeline(self._llm_extractor()).extract(
                             extracted.text,
                             allow_llm=True,
@@ -192,10 +203,12 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "crp_source_file": _audit_value(result, "crp_source_file"),
         "caderneta_evidence_sources": _audit_value(result, "caderneta_evidence_sources"),
         "caderneta_same_pdf_found": _audit_value(result, "caderneta_same_pdf_found"),
+        "internal_caderneta_status": _audit_value(result, "internal_caderneta_status"),
+        "internal_caderneta_count": _audit_value(result, "internal_caderneta_count"),
     }
 
 
-PIPELINE_VERSION = "3.2.1"
+PIPELINE_VERSION = "3.2"
 
 
 def _with_property_pack_audit(result, match: PropertyPackMatch):
@@ -219,6 +232,50 @@ def _reconcile_property_evidence(result, match: PropertyPackMatch, annex_pages, 
         audit["caderneta_same_pdf_found"] = bool(annex_pages)
         result = replace(result, audit=audit)
     return result
+
+
+def _select_internal_caderneta(result, groups: list[list[AnnexPage]]) -> tuple[list[AnnexPage], str]:
+    if not groups:
+        return [], "internal_caderneta_not_found"
+    if len(groups) == 1:
+        return groups[0], "internal_caderneta_selected"
+
+    contract_article = str(result.matrix_article or "").replace("-", "").upper()
+    contract_section = str(result.matrix_section or "").upper()
+    scored: list[tuple[int, list[AnnexPage]]] = []
+    for group in groups:
+        caderneta = parse_caderneta(group)
+        article = caderneta.matrix_article.replace("-", "").upper()
+        score = 70 if contract_article and article == contract_article else 0
+        score += 20 if contract_section and caderneta.matrix_section == contract_section else 0
+        scored.append((score, group))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    if scored and scored[0][0] >= 70 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return scored[0][1], "internal_caderneta_selected_by_contract_identity"
+    return [], "multiple_cadernetas_unresolved"
+
+
+def _with_internal_caderneta_audit(result, groups: list[list[AnnexPage]], status: str):
+    audit = dict(result.audit)
+    audit.update({
+        "internal_caderneta_status": status,
+        "internal_caderneta_count": len(groups),
+        "internal_caderneta_groups": [
+            {
+                "pages": [page.page_number for page in group],
+                "values": parse_caderneta(group).as_dict(),
+            }
+            for group in groups
+        ],
+    })
+    if status == "multiple_cadernetas_unresolved":
+        return replace(
+            result,
+            status="needs_review",
+            reason="multiple_internal_cadernetas_unresolved",
+            audit=audit,
+        )
+    return replace(result, audit=audit)
 
 
 def _read_annex_text(path: Path, config: AppConfig) -> str:

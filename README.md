@@ -171,6 +171,13 @@ sem criar linhas duplicadas, use:
 doc-register scan --config config.json --reprocess-cadernetas
 ```
 
+O [Step 3.2](docs/step3.2.md) separa múltiplas cadernetas presentes no mesmo
+contrato. Quando não houver uma associação inequívoca com o imóvel contratual,
+nenhuma delas é misturada nem publicada automaticamente: o resultado fica para
+revisão. Conflitos entre contrato e caderneta passam a ser visíveis no Excel,
+e o Ollama recebe apenas um resumo cadastral determinístico, nunca as páginas
+OCR brutas da caderneta.
+
 Configurações opcionais:
 
 - `property_extraction_dir`: diretório dos JSONs da pipeline secundária.

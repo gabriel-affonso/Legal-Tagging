@@ -14,6 +14,7 @@ from doc_register.property_pipeline import (
 )
 from doc_register.property_intelligence import (
     CadernetaValues,
+    discover_caderneta_groups,
     discover_caderneta_pages,
     parse_caderneta,
     recover_from_annexes,
@@ -48,6 +49,7 @@ def load_tests(
         test_title_and_model_b_identify_same_pdf_caderneta_near_document_end,
         test_model_a_caderneta_recovers_owner_from_later_page,
         test_caderneta_title_is_found_before_the_usual_annex_pages,
+        test_multiple_cadernetas_are_returned_as_separate_groups,
         test_property_pack_matches_separate_caderneta_by_identifier,
         test_property_pack_rejects_ambiguous_candidates,
         test_discovers_and_parses_caderneta_in_document_tail,
@@ -442,6 +444,28 @@ def test_caderneta_title_is_found_before_the_usual_annex_pages() -> None:
     assert [page.page_number for page in pages] == [4, 5, 6]
     assert values.matrix_article == "123"
     assert values.owner_name == "Maria da Silva"
+
+
+def test_multiple_cadernetas_are_returned_as_separate_groups() -> None:
+    document = """
+    [Page 4] CADERNETA PREDIAL RÚSTICA
+    MODELO A
+    [Page 5] IDENTIFICAÇÃO DO PRÉDIO
+    SECÇÃO: K
+    ARTIGO MATRICIAL Nº: 123
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
+    [Page 12] CADERNETA PREDIAL RÚSTICA
+    MODELO B
+    [Page 13] IDENTIFICAÇÃO DO PRÉDIO
+    SECÇÃO: M
+    ARTIGO MATRICIAL Nº: 456
+    NOME/LOCALIZAÇÃO PRÉDIO: Herdade da Fonte
+    """
+
+    groups = discover_caderneta_groups(document)
+
+    assert [[page.page_number for page in group] for group in groups] == [[4, 5], [12, 13]]
+    assert [parse_caderneta(group).matrix_article for group in groups] == ["123", "456"]
 
 
 def test_discovers_and_parses_caderneta_in_document_tail() -> None:

@@ -53,6 +53,8 @@ PROPERTY_REGISTER_COLUMNS = (
     "crp_source_file",
     "caderneta_evidence_sources",
     "caderneta_same_pdf_found",
+    "internal_caderneta_status",
+    "internal_caderneta_count",
     "audit",
 )
 
@@ -186,6 +188,9 @@ class ExcelRegister:
             "ai_accepted_fields": 34,
             "ai_rejected_fields": 34,
             "ai_review_reason": 54,
+            "cadastral_evidence_status": 32,
+            "cadastral_evidence_pages": 22,
+            "cadastral_conflicts": 48,
             "deterministic_json": 80,
             "llm_json": 80,
             "raw_json": 80,
@@ -328,7 +333,10 @@ class PropertyExcelRegister:
             "extraction_notes": 54, "llm_error": 48, "evidence_model": 80,
             "property_catalog_text_source": 28, "property_pack_match_method": 34,
             "caderneta_source_file": 34, "crp_source_file": 34,
-            "caderneta_evidence_sources": 46, "audit": 80,
+            "caderneta_evidence_sources": 46,
+            "internal_caderneta_status": 38,
+            "internal_caderneta_count": 18,
+            "audit": 80,
         }
         for index, header in enumerate(PROPERTY_REGISTER_COLUMNS, start=1):
             if header in widths:
