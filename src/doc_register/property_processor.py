@@ -15,6 +15,8 @@ from .pdf_text import extract_pdf_caderneta_text, extract_text_with_optional_ocr
 from .property_intelligence import (
     AnnexPage,
     discover_caderneta_groups,
+    assess_cadastral_evidence,
+    matrix_key,
     parse_caderneta,
     reconcile_property,
     recover_from_annexes,
@@ -82,7 +84,12 @@ class PropertyExtractionProcessor:
                     if not pack_match.caderneta_values and not annex_pages:
                         result = recover_from_annexes(result, "")
                     if (
-                        internal_caderneta_status != "multiple_cadernetas_unresolved"
+                        internal_caderneta_status not in {
+                            "multiple_cadernetas_unresolved",
+                            "multiple_cadernetas_same_matrix_key",
+                            "internal_caderneta_matrix_key_conflict",
+                            "internal_caderneta_invalid_structure",
+                        }
                         and recovery_required(result)
                         and self.config.property_llm_enabled
                     ):
@@ -178,6 +185,7 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "property_name": result.get("property_name", ""),
         "matrix_article": result.get("matrix_article", ""),
         "matrix_section": result.get("matrix_section", ""),
+        "property_matrix_key": result.get("property_matrix_key", ""),
         "area_m2": result.get("area_m2", ""),
         "confidence": result.get("confidence", ""),
         "lease_score": result.get("lease_score", ""),
@@ -208,7 +216,7 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
     }
 
 
-PIPELINE_VERSION = "3.2"
+PIPELINE_VERSION = "3.3"
 
 
 def _with_property_pack_audit(result, match: PropertyPackMatch):
@@ -220,7 +228,12 @@ def _with_property_pack_audit(result, match: PropertyPackMatch):
 def _reconcile_property_evidence(result, match: PropertyPackMatch, annex_pages, contract_file_name: str):
     sources: list[str] = []
     if match.caderneta_values:
-        result = reconcile_property(result, match.caderneta_values, [])
+        result = reconcile_property(
+            result,
+            match.caderneta_values,
+            [],
+            match.cadastral_evidence,
+        )
         if match.source_path:
             sources.append(match.source_path.name)
     if annex_pages:
@@ -237,21 +250,23 @@ def _reconcile_property_evidence(result, match: PropertyPackMatch, annex_pages, 
 def _select_internal_caderneta(result, groups: list[list[AnnexPage]]) -> tuple[list[AnnexPage], str]:
     if not groups:
         return [], "internal_caderneta_not_found"
-    if len(groups) == 1:
-        return groups[0], "internal_caderneta_selected"
+    evidence = [(group, assess_cadastral_evidence(group)) for group in groups]
+    verified = [(group, item) for group, item in evidence if item.is_structurally_valid]
+    if not verified:
+        return [], "internal_caderneta_invalid_structure"
 
-    contract_article = str(result.matrix_article or "").replace("-", "").upper()
-    contract_section = str(result.matrix_section or "").upper()
-    scored: list[tuple[int, list[AnnexPage]]] = []
-    for group in groups:
-        caderneta = parse_caderneta(group)
-        article = caderneta.matrix_article.replace("-", "").upper()
-        score = 70 if contract_article and article == contract_article else 0
-        score += 20 if contract_section and caderneta.matrix_section == contract_section else 0
-        scored.append((score, group))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    if scored and scored[0][0] >= 70 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
-        return scored[0][1], "internal_caderneta_selected_by_contract_identity"
+    contract_key = matrix_key(result.matrix_article, result.matrix_section)
+    if contract_key:
+        matches = [(group, item) for group, item in verified if item.matrix_key == contract_key]
+        if len(matches) == 1:
+            return matches[0][0], "internal_caderneta_selected_by_matrix_key"
+        if len(matches) > 1:
+            return [], "multiple_cadernetas_same_matrix_key"
+        # A full contractual identity that disagrees with the only cadastral
+        # identity is not enough to attribute a holder to this contract.
+        return [], "internal_caderneta_matrix_key_conflict"
+    if len(verified) == 1:
+        return verified[0][0], "internal_caderneta_selected"
     return [], "multiple_cadernetas_unresolved"
 
 
@@ -264,11 +279,17 @@ def _with_internal_caderneta_audit(result, groups: list[list[AnnexPage]], status
             {
                 "pages": [page.page_number for page in group],
                 "values": parse_caderneta(group).as_dict(),
+                "evidence": assess_cadastral_evidence(group).to_dict(),
             }
             for group in groups
         ],
     })
-    if status == "multiple_cadernetas_unresolved":
+    if status in {
+        "multiple_cadernetas_unresolved",
+        "multiple_cadernetas_same_matrix_key",
+        "internal_caderneta_matrix_key_conflict",
+        "internal_caderneta_invalid_structure",
+    }:
         return replace(
             result,
             status="needs_review",

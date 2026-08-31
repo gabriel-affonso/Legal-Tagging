@@ -140,7 +140,7 @@ CATEGORY_PROMPT_TREE = {
         "If the contract takes effect after a licence is obtained, keep contract_start_date empty unless an explicit calendar date is stated.\n"
         "When there are multiple lessors, put all names in lessor separated by semicolons. Never use a key named lessors.\n"
         "lessor and lessee must contain names only. Do not include identification numbers, tax IDs, citizen card numbers, marital status, matrimonial regime, addresses, dates, or descriptive prose.\n"
-        "The extraction excerpts are structurally labelled. For lessor/owner use only PARTIES — LESSOR; for lessee use only PARTIES — LESSEE; for property use only PROPERTY RECITAL; for dates use TERM; and for commercial amounts use COMMERCIAL CLAUSES. If the permitted section does not explicitly support a value, return an empty string.\n"
+        "The extraction excerpts are structurally labelled. For lessor and lessee, use only the PARTIES — ENTITIES ONLY zone and return entity names only; never return role labels or prose. For property ownership, article, section, parish, property name and area, use only PROPERTY — CADASTRAL / CRP ONLY when present. For signature date use SIGNATURE — DATE ONLY; for commercial amounts use FINANCIAL — CONTRACT CLAUSES ONLY. If the permitted section does not explicitly support a value, return an empty string.\n"
         "Do not use Passport, Government, Canada, Citizenship or Immigration as a lease party unless the same entity is explicitly and repeatedly declared as a party in the labelled party section.\n"
         "Keep every extracted value concise. Never copy complete clauses or paragraphs.\n"
         "When OCR is corrupted, extract only a name that remains clearly readable; otherwise return an empty string.\n"

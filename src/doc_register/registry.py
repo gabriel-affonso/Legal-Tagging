@@ -29,6 +29,7 @@ PROPERTY_REGISTER_COLUMNS = (
     "property_name",
     "matrix_article",
     "matrix_section",
+    "property_matrix_key",
     "area_m2",
     "confidence",
     "lease_score",
@@ -329,7 +330,7 @@ class PropertyExcelRegister:
         sheet.freeze_panes = "A2"
         widths = {
             "pipeline_version": 16, "processed_at": 22, "source_file_name": 34, "source_file_path": 48,
-            "sha256": 66, "property_name": 42, "reason": 28,
+            "sha256": 66, "property_name": 42, "property_matrix_key": 18, "reason": 28,
             "extraction_notes": 54, "llm_error": 48, "evidence_model": 80,
             "property_catalog_text_source": 28, "property_pack_match_method": 34,
             "caderneta_source_file": 34, "crp_source_file": 34,

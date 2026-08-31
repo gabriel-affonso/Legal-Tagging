@@ -45,6 +45,7 @@ class ExtractionResult:
     property_display_name: str = ""
     property_article: str = ""
     property_section: str = ""
+    property_matrix_key: str = ""
     property_parish: str = ""
     property_municipality: str = ""
     property_district: str = ""

@@ -161,7 +161,7 @@ contrato: pesquisa uma faixa mais ampla perto do final, a partir das últimas
 páginas, e identifica o título `Actualização de Caderneta Predial Rústica`
 com `Modelo A` ou `Modelo B`, incluindo as páginas seguintes da caderneta.
 
-O [Step 3.2.1](docs/step3.2.1.md) procura a caderneta em **todas** as páginas
+O [Step 3.3](docs/step3.3.md) procura a caderneta em **todas** as páginas
 do próprio contrato, sem pressupor a sua posição. Esta regra é partilhada com
 a pipeline principal, que passa a priorizar a caderneta para proprietário,
 identificação, artigo, secção e área. Para atualizar contratos já presentes na aba principal,

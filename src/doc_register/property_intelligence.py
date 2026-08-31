@@ -56,6 +56,40 @@ class CadernetaValues:
         )
 
 
+@dataclass(frozen=True)
+class CadastralEvidence:
+    """A verified, internally consistent cadastral fact set.
+
+    A name is not an owner merely because it appears near a caderneta-looking
+    page.  The evidence object keeps the property identity, holder-table
+    context and source pages together so callers cannot publish ``owner_name``
+    independently from the document that proves it.
+    """
+
+    values: CadernetaValues
+    page_numbers: tuple[int, ...]
+    matrix_key: str = ""
+    structure_status: str = "not_cadastral"
+    owner_status: str = "owner_not_found"
+
+    @property
+    def is_structurally_valid(self) -> bool:
+        return self.structure_status == "verified"
+
+    @property
+    def owner_is_verified(self) -> bool:
+        return self.owner_status == "verified"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "values": self.values.as_dict(),
+            "page_numbers": list(self.page_numbers),
+            "matrix_key": self.matrix_key or None,
+            "structure_status": self.structure_status,
+            "owner_status": self.owner_status,
+        }
+
+
 def recovery_required(result: PropertyExtraction) -> bool:
     return (
         result.confidence < 80
@@ -143,10 +177,53 @@ def parse_caderneta(pages: list[AnnexPage]) -> CadernetaValues:
     ).validated()
 
 
+def assess_cadastral_evidence(pages: list[AnnexPage]) -> CadastralEvidence:
+    """Validate a caderneta as a whole before exposing its holder as owner."""
+    values = parse_caderneta(pages)
+    text = "\n".join(page.text for page in pages)
+    normalized = _fold(text)
+    has_title = bool(re.search(r"\bcaderneta\s+predial\b", normalized, re.I))
+    has_property_header = bool(re.search(r"\bidentificacao\s+do\s+predio\b", normalized, re.I))
+    has_holders = bool(re.search(r"\btitulares?\b", normalized, re.I))
+    has_identity = bool(values.matrix_article and values.matrix_section)
+    # A title is normally present.  The second form keeps OCR-imperfect
+    # cadernetas usable only when all independent structural sections agree.
+    structure_valid = has_identity and (
+        has_title or (has_property_header and has_holders)
+    )
+    if not structure_valid:
+        structure_status = "invalid_cadastral_structure"
+    else:
+        structure_status = "verified"
+
+    _, owner_status = _caderneta_owner_with_status(text)
+    if not structure_valid and values.owner_name:
+        owner_status = "owner_blocked_unverified_caderneta"
+    elif values.owner_name and structure_valid:
+        owner_status = "verified"
+    elif not values.owner_name and owner_status == "verified":
+        owner_status = "owner_not_found"
+    return CadastralEvidence(
+        values=values,
+        page_numbers=tuple(page.page_number for page in pages),
+        matrix_key=matrix_key(values.matrix_article, values.matrix_section),
+        structure_status=structure_status,
+        owner_status=owner_status,
+    )
+
+
+def matrix_key(article: str, section: str) -> str:
+    """Return the business identity requested by the register (for example 80-J)."""
+    article = str(article or "").strip().upper().replace(" ", "")
+    section = str(section or "").strip().upper().replace(" ", "")
+    return f"{article}-{section}" if _valid_article(article) and _valid_section(section) else ""
+
+
 def reconcile_property(
     contract: PropertyExtraction,
     caderneta: CadernetaValues,
     pages: list[AnnexPage],
+    cadastral_evidence: CadastralEvidence | None = None,
 ) -> PropertyExtraction:
     """Consolidate contract context and caderneta evidence without guessing."""
     contract_values = _values_from_result(contract)
@@ -205,7 +282,14 @@ def reconcile_property(
         else:
             evidence[field] = {"value": None, "source": None, "confidence": 0}
 
-    owner_name = caderneta.owner_name
+    cadastral = cadastral_evidence or (assess_cadastral_evidence(pages) if pages else CadastralEvidence(
+        values=caderneta,
+        page_numbers=(),
+        matrix_key=matrix_key(caderneta.matrix_article, caderneta.matrix_section),
+        structure_status="external_caderneta_unverified",
+        owner_status="owner_blocked_unverified_caderneta",
+    ))
+    owner_name = caderneta.owner_name if cadastral.owner_is_verified else ""
     if owner_name:
         evidence["owner_name"] = {
             "value": owner_name,
@@ -233,6 +317,7 @@ def reconcile_property(
         ),
         "confidence_before_recovery": confidence_before,
         "confidence_after_recovery": confidence_after,
+        "cadastral_evidence": cadastral.to_dict(),
     })
     return replace(
         contract,
@@ -241,6 +326,9 @@ def reconcile_property(
         property_name=str(final["property_name"] or ""),
         matrix_article=str(final["matrix_article"] or ""),
         matrix_section=str(final["matrix_section"] or ""),
+        property_matrix_key=matrix_key(
+            str(final["matrix_article"] or ""), str(final["matrix_section"] or "")
+        ),
         area_m2=final["area_m2"],
         owner_name=owner_name,
         confidence=confidence_after,
@@ -336,20 +424,45 @@ def _caderneta_area(text: str) -> int | float | None:
 
 
 def _caderneta_owner(text: str) -> str:
+    value, _ = _caderneta_owner_with_status(text)
+    return value
+
+
+def _caderneta_owner_with_status(text: str) -> tuple[str, str]:
     normalized = _fold(text)
     holder = re.search(r"\btitulares?\b(?P<value>.*?)(?=\b(?:elementos\s+para\s+a\s+validacao|emitido\s+via|codigo\s+de\s+validacao)\b|$)", normalized, re.IGNORECASE | re.DOTALL)
-    scope = text[holder.start("value"):holder.end("value")] if holder else text
-    for pattern in (
+    if not holder:
+        return "", "owner_missing_titulares_label"
+    scope = text[holder.start("value"):holder.end("value")]
+    # Some cadernetas use the singular labelled form ``Titular: Nome`` rather
+    # than a multi-row ``TITULARES / Nome: ...`` table.  It is acceptable only
+    # because this function is called from a structurally validated caderneta.
+    direct = re.search(
+        r"(?<!tipo\sde\s)\b(?:titular|propriet[aá]rio|sujeito\s+passivo)\s*[:\-]\s*(.+?)(?=\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b|$)",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    patterns = (
         r"\bnome\s*[:\-]\s*(.+?)(?=\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b|$)",
         r"\b(?:titular|propriet[aá]rio|sujeito\s+passivo)\s*[:\-]\s*(.+?)(?=\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b|$)",
-    ):
-        match = re.search(pattern, scope, re.IGNORECASE | re.DOTALL)
+    )
+    matches = [direct] if direct else []
+    matches.extend(
+        re.search(pattern, scope, re.IGNORECASE | re.DOTALL) for pattern in patterns
+    )
+    for match in matches:
         if match:
             value = re.sub(r"\s+", " ", match.group(1)).strip(" .,:;-\n")
             cleaned = _clean_owner_name(value)
+            source = text if match is direct else scope
+            local_context = _fold(source[match.start():min(len(source), match.end() + 260)])
+            if cleaned and not re.search(r"\barrendatari[oa]s?\b", _fold(cleaned), re.I):
+                if re.search(r"\btipo\s+de\s+titular\b.{0,80}\barrendatari[oa]s?\b", local_context, re.I):
+                    return "", "owner_blocked_tenant_holder_type"
+                return cleaned, "verified"
             if cleaned:
-                return cleaned
-    return ""
+                return "", "owner_blocked_tenant_name"
+    return "", "owner_not_found"
 
 
 def _clean_owner_name(value: str) -> str:
@@ -357,7 +470,11 @@ def _clean_owner_name(value: str) -> str:
     if len(value) < 4:
         return ""
     normalized = _fold(value)
-    if normalized in {"NOME", "TITULAR", "TITULARES", "PROPRIETARIO", "PROPRIETARIOS"}:
+    if normalized in {
+        "NOME", "TITULAR", "TITULARES", "PROPRIETARIO", "PROPRIETARIOS",
+        "ARRENDATARIO", "ARRENDATARIA", "ARRENDATARIOS", "ARRENDATARIAS",
+        "SENHORIO", "SENHORIOS",
+    }:
         return ""
     if re.search(r"\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b", normalized, re.IGNORECASE):
         return ""
@@ -417,9 +534,12 @@ def _fold(value: str) -> str:
 __all__ = [
     "AnnexPage",
     "CadernetaValues",
+    "CadastralEvidence",
+    "assess_cadastral_evidence",
     "discover_caderneta_pages",
     "discover_caderneta_groups",
     "parse_caderneta",
     "recover_from_annexes",
     "recovery_required",
+    "matrix_key",
 ]

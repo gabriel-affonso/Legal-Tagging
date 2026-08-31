@@ -18,6 +18,10 @@ from .property_intelligence import discover_caderneta_groups
 from .registry import ExcelRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .ai_reviewer import review_if_needed
+from .step33_engine import (
+    apply_field_centric_extraction,
+    prepare_field_centric_extraction,
+)
 from .validators.contract_clause_integration import apply_contract_clause_segmentation
 from .validators.party_centric import (
     apply_party_centric_contract_extraction,
@@ -188,12 +192,15 @@ class DocumentProcessor:
         # document-wide semantic sample.
         party_centric_report = prepare_party_centric_contract(document_text)
         final_resolution_report = prepare_contract_final_resolution(document_text)
+        step33_report = prepare_field_centric_extraction(document_text)
 
         classification_text = select_classification_text(
             document_text,
             fallback_words=self.config.llm_classification_words,
         )
-        highlighted_text = final_resolution_report.context_for_llm(
+        highlighted_text = step33_report.context_for_llm(
+            max_chars=self.config.llm_extraction_max_chars,
+        ) or final_resolution_report.context_for_llm(
             max_chars=self.config.llm_extraction_max_chars,
         ) or party_centric_report.context_for_llm(
             max_chars=self.config.llm_extraction_max_chars,
@@ -315,8 +322,10 @@ class DocumentProcessor:
             party_centric_report,
         )
         # Step 2.8 is the only final publisher for contract fields. It runs
-        # after deterministic recovery and AI review, avoiding last-write-wins.
+        # after deterministic recovery and AI review.  Step 3.3 then applies
+        # field-specific source ranking and consensus as the final publisher.
         result = apply_contract_final_resolution(result, final_resolution_report)
+        result = apply_field_centric_extraction(result, step33_report)
         result = validate_result(
             result,
             signals,

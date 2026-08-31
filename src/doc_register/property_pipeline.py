@@ -44,6 +44,7 @@ class PropertyExtraction:
     property_name: str = ""
     matrix_article: str = ""
     matrix_section: str = ""
+    property_matrix_key: str = ""
     area_m2: int | float | None = None
     owner_name: str = ""
     confidence: int = 0
@@ -64,6 +65,7 @@ class PropertyExtraction:
             "property_name": self.property_name or None,
             "matrix_article": self.matrix_article or None,
             "matrix_section": self.matrix_section or None,
+            "property_matrix_key": self.property_matrix_key or None,
             "area_m2": self.area_m2,
             "owner_name": self.owner_name or None,
             "confidence": self.confidence,
@@ -137,6 +139,7 @@ class PropertyExtractionPipeline:
             property_name=values["property_name"],
             matrix_article=values["matrix_article"],
             matrix_section=values["matrix_section"],
+            property_matrix_key=_matrix_key(values["matrix_article"], values["matrix_section"]),
             area_m2=values["area_m2"],
             confidence=confidence,
             source_section="Considerando que" if has_considering else "",
@@ -345,6 +348,12 @@ def is_valid_matrix_article(value: str) -> bool:
 
 def is_valid_matrix_section(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Z]", value.strip().upper()))
+
+
+def _matrix_key(article: str, section: str) -> str:
+    article = str(article or "").strip().upper().replace(" ", "")
+    section = str(section or "").strip().upper().replace(" ", "")
+    return f"{article}-{section}" if is_valid_matrix_article(article) and is_valid_matrix_section(section) else ""
 
 
 def is_valid_property_name(value: str) -> bool:

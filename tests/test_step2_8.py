@@ -66,11 +66,17 @@ class Step28Tests(unittest.TestCase):
         self.assertEqual(result.rent_unit, "per_hectare")
         self.assertEqual(result.monthly_rent, "")
         self.assertNotIn("missing_monthly_rent", result.validation_issues)
-        self.assertIn("ownership_source_conflict", result.review_reason)
+        # This abbreviated caderneta has no coherent holder table or
+        # article+section pair, so it may supply property fields but not a
+        # cadastral owner.  A malformed annex must not create a false owner.
+        self.assertEqual(result.owner_name, "")
+        self.assertEqual(result.property_matrix_key, "140-J")
+        cadastral = result.raw_json["step2_7_final_resolution"]["cadastral_evidence"]
+        self.assertEqual(cadastral[0]["structure_status"], "invalid_cadastral_structure")
         audit = result.raw_json["step2_7_final_resolution"]
         self.assertTrue(audit["document_zones"])
         self.assertTrue(audit["field_candidates"])
-        self.assertTrue(audit["conflicts"])
+        self.assertTrue(audit["cadastral_evidence"])
 
     def test_generic_property_label_is_not_accepted(self) -> None:
         report = prepare_contract_final_resolution(
@@ -113,12 +119,36 @@ class Step28Tests(unittest.TestCase):
         self.assertEqual(result.property_name, "Herdade da Fonte")
         self.assertEqual(result.property_article, "456")
         self.assertEqual(result.property_section, "M")
+        self.assertEqual(result.property_matrix_key, "456-M")
         self.assertEqual(result.property_total_area, "2.5 hectares")
         self.assertEqual(result.owner_name, "Ana Maria da Silva")
         llm_context = report.context_for_llm(max_chars=2000)
         self.assertIn("FACTOS CADASTRAIS VERIFICADOS", llm_context)
         self.assertIn("artigo matricial: 456", llm_context)
         self.assertNotIn("IDENTIFICAÇÃO DO PRÉDIO", llm_context)
+
+    def test_cadastral_tenant_label_cannot_be_published_as_owner(self) -> None:
+        document = """[Page 1] CONTRATO DE ARRENDAMENTO
+        GESTO ENERGIA, S.A., de ora em diante designada por Arrendatária.
+        [Page 21] CADERNETA PREDIAL RÚSTICA
+        Modelo A
+        [Page 22] IDENTIFICAÇÃO DO PRÉDIO
+        SECÇÃO: J
+        ARTIGO MATRICIAL Nº: 80
+        NOME/LOCALIZAÇÃO PRÉDIO: Herdade do Norte
+        [Page 23] TITULARES
+        Nome: Arrendatário
+        Tipo de titular: Arrendatária
+        """
+        report = prepare_contract_final_resolution(document)
+        result = apply_contract_final_resolution(
+            ExtractionResult(document_category="lease_contract"), report
+        )
+
+        self.assertEqual(result.property_matrix_key, "80-J")
+        self.assertEqual(result.owner_name, "")
+        evidence = result.raw_json["step2_7_final_resolution"]["cadastral_evidence"]
+        self.assertEqual(evidence[0]["owner_status"], "owner_not_found")
 
     def test_caderneta_conflict_is_visible_and_cadastral_value_wins(self) -> None:
         document = """[Page 1] CONTRATO DE ARRENDAMENTO

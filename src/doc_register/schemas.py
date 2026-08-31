@@ -70,6 +70,10 @@ PROPERTY_FIELDS = [
     "owner_address",
 ]
 
+# Derived only from validated article + section.  It is intentionally excluded
+# from LLM schemas: no model should invent a property identity key.
+DERIVED_CADASTRAL_FIELDS = ["property_matrix_key"]
+
 BANK_FIELDS = [
     "bank_account_holder",
     "iban",
@@ -133,6 +137,7 @@ REGISTER_COLUMNS = (
     + GENERAL_FIELDS
     + LEASE_FIELDS
     + PROPERTY_FIELDS
+    + DERIVED_CADASTRAL_FIELDS
     + BANK_FIELDS
     + PAYMENT_FIELDS
     + TECHNICAL_FIELDS

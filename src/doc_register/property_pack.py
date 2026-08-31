@@ -11,7 +11,13 @@ import unicodedata
 
 from .detectors import detect_signals
 from .pdf_text import extract_pdf_text, extract_text_with_optional_ocr
-from .property_intelligence import CadernetaValues, discover_caderneta_pages, parse_caderneta
+from .property_intelligence import (
+    CadastralEvidence,
+    CadernetaValues,
+    assess_cadastral_evidence,
+    discover_caderneta_pages,
+    parse_caderneta,
+)
 from .property_pipeline import (
     PropertyExtraction,
     is_valid_matrix_article,
@@ -31,6 +37,7 @@ class PropertyDocumentDescriptor:
     kind: str = "other"
     text_source: str = ""
     caderneta_values: CadernetaValues | None = None
+    cadastral_evidence: CadastralEvidence | None = None
     crp_values: CadernetaValues | None = None
     sharepoint_sequence: int | None = None
 
@@ -52,6 +59,7 @@ class PropertyPackMatch:
     source_path: Path | None = None
     crp_source_path: Path | None = None
     caderneta_values: CadernetaValues | None = None
+    cadastral_evidence: CadastralEvidence | None = None
     catalog_status: str = "property_catalog_no_caderneta"
     catalog_text_source: str = ""
 
@@ -171,6 +179,7 @@ class PropertyPackDiscovery:
             source_path=caderneta.path if caderneta else None,
             crp_source_path=crp.path if crp else None,
             caderneta_values=caderneta.caderneta_values if caderneta and status == "property_pack_matched" else None,
+            cadastral_evidence=caderneta.cadastral_evidence if caderneta and status == "property_pack_matched" else None,
             catalog_status="caderneta_catalogued",
             catalog_text_source=caderneta.text_source if caderneta else "",
         )
@@ -186,13 +195,15 @@ class PropertyPackDiscovery:
                 text, source = self._read_candidate(path)
                 caderneta_pages = discover_caderneta_pages(text)
                 if caderneta_pages:
-                    caderneta = parse_caderneta(caderneta_pages)
+                    cadastral_evidence = assess_cadastral_evidence(caderneta_pages)
+                    caderneta = cadastral_evidence.values
                     descriptors.append(PropertyDocumentDescriptor(
                         path=path,
                         identifiers=frozenset(_identifiers(path.name, text, caderneta.matrix_article)),
                         kind="caderneta_predial",
                         text_source=source,
                         caderneta_values=caderneta,
+                        cadastral_evidence=cadastral_evidence,
                         sharepoint_sequence=_sharepoint_sequence(path.name),
                     ))
                     continue

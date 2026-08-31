@@ -12,7 +12,13 @@ import time
 from typing import Iterable
 
 from ..models import ExtractionResult
-from ..property_intelligence import discover_caderneta_groups, discover_caderneta_pages, parse_caderneta
+from ..property_intelligence import (
+    assess_cadastral_evidence,
+    discover_caderneta_groups,
+    discover_caderneta_pages,
+    matrix_key,
+    parse_caderneta,
+)
 from .name_quality import validate_name_field
 from .ocr_quality import PageQualityReport, analyze_page_quality
 from .property_recovery import recover_property_group
@@ -98,6 +104,7 @@ class ContractResolutionReport:
     entities: dict[str, dict[str, object]] = field(default_factory=dict)
     decisions: dict[str, dict[str, object]] = field(default_factory=dict)
     conflicts: list[dict[str, object]] = field(default_factory=list)
+    cadastral_evidence: list[dict[str, object]] = field(default_factory=list)
     unresolved_fields: list[str] = field(default_factory=list)
     started_at: float = field(default_factory=time.monotonic)
 
@@ -135,6 +142,7 @@ class ContractResolutionReport:
             "entities": list(self.entities.values()),
             "field_candidates": [item.to_dict() for item in self.candidates],
             "field_decisions": self.decisions, "conflicts": self.conflicts,
+            "cadastral_evidence": self.cadastral_evidence,
             "unresolved_fields": self.unresolved_fields,
             "metrics": {"candidate_count": len(self.candidates), "zone_count": len(self.zones)},
             "processing_duration_seconds": round(time.monotonic() - self.started_at, 4),
@@ -189,7 +197,20 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
             cadastral_owners[0], result.owner_name, "accepted"
         )
     else:
-        result.owner_name = _declared_owner_value(report) or result.owner_name
+        # In the register, ``owner_name`` means cadastral title holder, not
+        # the contractual landlord.  A lessor may be an attorney, usufructuary
+        # or simply be misread by OCR; do not turn that role into ownership.
+        result.owner_name = ""
+        report.decisions["owner_name"] = {
+            "field": "owner_name",
+            "selected_value": "",
+            "decision": "blocked",
+            "reason": "no_verified_cadastral_owner",
+            "requires_review": bool(report.cadastral_evidence),
+        }
+    result.property_matrix_key = matrix_key(
+        result.property_article, result.property_section
+    )
     if result.rent_frequency and result.rent_frequency != "monthly":
         result.monthly_rent = ""
     if report.conflicts:
@@ -312,7 +333,13 @@ def _extract_party_candidates(report: ContractResolutionReport, zone: DocumentZo
 def _extract_property_candidates(report: ContractResolutionReport, zone: DocumentZone) -> None:
     authority_boost = 0.12 if zone.zone_type == "cadastral_record" else 0.0
     if zone.zone_type == "cadastral_record":
-        caderneta = parse_caderneta(discover_caderneta_pages(zone.text_span))
+        pages = discover_caderneta_pages(zone.text_span)
+        evidence = assess_cadastral_evidence(pages)
+        report.cadastral_evidence.append({
+            **evidence.to_dict(),
+            "source_type": zone.internal_document,
+        })
+        caderneta = evidence.values
         if caderneta.property_name:
             _add(report, _candidate("property_name", caderneta.property_name, zone, "", "caderneta_property_name", 0.99))
         if caderneta.matrix_article:
@@ -322,7 +349,7 @@ def _extract_property_candidates(report: ContractResolutionReport, zone: Documen
         if caderneta.area_m2 is not None:
             hectares = caderneta.area_m2 / 10_000
             _add(report, _candidate("property_total_area", f"{hectares:g} hectares", zone, "", "caderneta_total_area", 0.99))
-        if caderneta.owner_name:
+        if evidence.owner_is_verified:
             for name in _names(caderneta.owner_name, "owner_name") or [caderneta.owner_name]:
                 _add(report, _candidate("cadastral_owner", name, zone, "cadastral_owner", "caderneta_holder_name", 0.99))
     group = recover_property_group(zone.text_span)
@@ -515,6 +542,18 @@ def _detect_cadastral_conflicts(report: ContractResolutionReport) -> None:
     }
     if lessors and cadastral and lessors != cadastral:
         report.conflicts.append({"type": "ownership_source_conflict", "declared_owners": sorted(lessors), "cadastral_owners": sorted(cadastral), "requires_review": True})
+    lessees = {
+        normalize_text(item.normalized_value)
+        for item in report.candidates
+        if item.field == "lessee" and item.validation_status == "valid"
+    }
+    same_cadastral_lessee = sorted(cadastral & lessees)
+    if same_cadastral_lessee:
+        report.conflicts.append({
+            "type": "cadastral_owner_matches_lessee",
+            "entities": same_cadastral_lessee,
+            "requires_review": True,
+        })
     for entity in report.entities.values():
         roles = {item["role"] for item in entity["roles"]}
         if "lessor" in roles and "lessee" in roles:

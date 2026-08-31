@@ -14,6 +14,7 @@ from doc_register.property_pipeline import (
 )
 from doc_register.property_intelligence import (
     CadernetaValues,
+    assess_cadastral_evidence,
     discover_caderneta_groups,
     discover_caderneta_pages,
     parse_caderneta,
@@ -55,6 +56,7 @@ def load_tests(
         test_discovers_and_parses_caderneta_in_document_tail,
         test_reconciles_contract_and_caderneta_with_evidence,
         test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook,
+        test_cadastral_owner_requires_holder_table_and_rejects_tenant_role,
     )
     return unittest.TestSuite(unittest.FunctionTestCase(function) for function in functions)
 
@@ -420,6 +422,28 @@ def test_model_a_caderneta_recovers_owner_from_later_page() -> None:
     assert values.matrix_article == "456"
     assert values.matrix_section == "M"
     assert values.area_m2 == 25000
+
+
+def test_cadastral_owner_requires_holder_table_and_rejects_tenant_role() -> None:
+    document = """
+    [Page 22] CADERNETA PREDIAL RÚSTICA
+    MODELO A
+    [Page 23] IDENTIFICAÇÃO DO PRÉDIO
+    SECÇÃO: J
+    ARTIGO MATRICIAL Nº: 80
+    NOME/LOCALIZAÇÃO PRÉDIO: Herdade do Norte
+    [Page 24] TITULARES
+    Nome: Arrendatário
+    Tipo de titular: Arrendatária
+    """
+
+    evidence = assess_cadastral_evidence(discover_caderneta_pages(document))
+
+    assert evidence.is_structurally_valid is True
+    assert evidence.matrix_key == "80-J"
+    assert evidence.values.owner_name == ""
+    assert evidence.owner_is_verified is False
+    assert evidence.owner_status in {"owner_not_found", "owner_blocked_tenant_name"}
 
 
 def test_caderneta_title_is_found_before_the_usual_annex_pages() -> None:
