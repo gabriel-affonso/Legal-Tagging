@@ -293,6 +293,71 @@ class PropertyTableRegister:
             finally:
                 workbook.close()
 
+    def materialize_from_property_extraction(self) -> tuple[int, int]:
+        """Rebuild Property Table from workbook data without opening any PDF.
+
+        ``Property Extraction`` supplies the eligible lease contracts and
+        their property-grain facts. ``Document Register`` contributes the
+        already-resolved contract fields. The complete replacement is done in
+        one locked workbook write, so a table run never invokes OCR or Ollama.
+        """
+        if not self.path.exists():
+            return 0, 0
+        with _workbook_lock(self.path):
+            try:
+                from openpyxl import load_workbook
+            except ImportError as exc:
+                raise RuntimeError("Missing dependency: install openpyxl with `pip install -r requirements.txt`.") from exc
+            workbook = load_workbook(self.path)
+            try:
+                if PROPERTY_SHEET_NAME not in workbook.sheetnames:
+                    return 0, 0
+                extraction_sheet = workbook[PROPERTY_SHEET_NAME]
+                extraction_headers = _sheet_headers(extraction_sheet)
+                required = {"sha256", "document_type", "properties"}
+                if not required.issubset(extraction_headers):
+                    return 0, 0
+                register_rows = (
+                    _sheet_rows_by_sha(workbook[SHEET_NAME])
+                    if SHEET_NAME in workbook.sheetnames else {}
+                )
+                if PROPERTY_TABLE_SHEET_NAME in workbook.sheetnames:
+                    table_sheet = workbook[PROPERTY_TABLE_SHEET_NAME]
+                else:
+                    table_sheet = workbook.create_sheet(PROPERTY_TABLE_SHEET_NAME)
+                    table_sheet.append(PROPERTY_TABLE_COLUMNS)
+                    _add_table(table_sheet, "PropertyTable", len(PROPERTY_TABLE_COLUMNS))
+                migrated = _ensure_named_headers(table_sheet, PROPERTY_TABLE_COLUMNS)
+                if not table_sheet.tables:
+                    _add_table(table_sheet, "PropertyTable", len(PROPERTY_TABLE_COLUMNS))
+                    migrated = True
+                if table_sheet.max_row > 1:
+                    table_sheet.delete_rows(2, table_sheet.max_row - 1)
+
+                contract_count = 0
+                row_count = 0
+                for extraction in _sheet_row_dicts(extraction_sheet, extraction_headers):
+                    sha256 = str(extraction.get("sha256") or "")
+                    if not sha256 or str(extraction.get("document_type") or "").strip().lower() != "lease_contract":
+                        continue
+                    contract_count += 1
+                    register_row = register_rows.get(sha256, {})
+                    result = _materialized_result(register_row, extraction)
+                    operational = _materialized_operational(register_row, extraction, sha256)
+                    for property_row in build_property_table_rows(result):
+                        payload = {**property_row, **operational}
+                        payload["property_row_id"] = f"{sha256}::{payload.get('property_row_id') or 'unresolved'}"
+                        table_sheet.append([
+                            _excel_value(payload.get(column, ""))
+                            for column in PROPERTY_TABLE_COLUMNS
+                        ])
+                        row_count += 1
+                self._format(table_sheet)
+                workbook.save(self.path)
+                return contract_count, row_count
+            finally:
+                workbook.close()
+
     def enrich_from_property_extraction(
         self, candidate: PdfCandidate, result: ExtractionResult
     ) -> ExtractionResult:
@@ -605,6 +670,87 @@ def _excel_value(value: object) -> object:
     return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
 
 
+def _sheet_headers(sheet) -> dict[str, int]:
+    if sheet.max_row < 1:
+        return {}
+    return {
+        str(cell.value): index
+        for index, cell in enumerate(next(sheet.iter_rows(min_row=1, max_row=1, values_only=False)), start=1)
+        if cell.value
+    }
+
+
+def _sheet_row_dicts(sheet, headers: dict[str, int] | None = None):
+    headers = headers or _sheet_headers(sheet)
+    for values in sheet.iter_rows(min_row=2, values_only=True):
+        yield {
+            name: values[index - 1] if index <= len(values) else ""
+            for name, index in headers.items()
+        }
+
+
+def _sheet_rows_by_sha(sheet) -> dict[str, dict[str, object]]:
+    headers = _sheet_headers(sheet)
+    if "sha256" not in headers:
+        return {}
+    return {
+        str(row["sha256"]): row
+        for row in _sheet_row_dicts(sheet, headers)
+        if row.get("sha256")
+    }
+
+
+def _materialized_result(
+    register_row: dict[str, object], extraction_row: dict[str, object]
+) -> ExtractionResult:
+    result = ExtractionResult()
+    for field_name in vars(result):
+        if field_name == "raw_json":
+            continue
+        value = register_row.get(field_name, "")
+        if value not in (None, ""):
+            setattr(result, field_name, value)
+    result.document_category = "lease_contract"
+    if not result.document_type:
+        result.document_type = "lease_contract"
+    raw = _json_dict(register_row.get("raw_json"))
+    properties = _json_list(extraction_row.get("properties"))
+    if not properties:
+        properties = [_property_extraction_single_row(extraction_row)]
+    raw["property_extraction"] = {
+        "status": str(extraction_row.get("status") or ""),
+        "properties": [item for item in properties if isinstance(item, dict)],
+    }
+    result.raw_json = raw
+    return result
+
+
+def _materialized_operational(
+    register_row: dict[str, object], extraction_row: dict[str, object], sha256: str
+) -> dict[str, object]:
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return {
+        "processed_at": now,
+        "source_file_name": register_row.get("source_file_name") or extraction_row.get("source_file_name") or "",
+        "copied_file_path": register_row.get("copied_file_path") or extraction_row.get("source_file_path") or "",
+        "sha256": sha256,
+        "file_created_at": register_row.get("file_created_at") or "",
+        "file_modified_at": register_row.get("file_modified_at") or "",
+    }
+
+
+def _json_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
 def _json_list(value: object) -> list[dict[str, object]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
@@ -633,6 +779,18 @@ def _property_extraction_single(
         "area_m2": value("area_m2"),
         "owner_name": value("owner_name"),
         "source_file": value("source_file_name"),
+    }
+
+
+def _property_extraction_single_row(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "property_name": row.get("property_name", ""),
+        "matrix_article": row.get("matrix_article", ""),
+        "matrix_section": row.get("matrix_section", ""),
+        "property_matrix_key": row.get("property_matrix_key", ""),
+        "area_m2": row.get("area_m2", ""),
+        "owner_name": row.get("owner_name", ""),
+        "source_file": row.get("source_file_name", ""),
     }
 
 

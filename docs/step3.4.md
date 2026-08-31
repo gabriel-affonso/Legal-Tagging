@@ -19,12 +19,13 @@ esses comandos pertencem ao pipeline predial independente e já utilizam a
 sheet `Property Extraction`.
 
 `property-scan` é obrigatório como etapa de elegibilidade antes de usar
-`--property-table`. A tabela só abre PDFs cujo SHA-256 já esteja classificado
-como `lease_contract` na sheet `Property Extraction`; não executa OCR, LLM ou
-o pipeline principal em anexos bancários, cadernetas isoladas ou outros PDFs.
+`--property-table`. A tabela é uma materialização direta das sheets
+`Property Extraction` e `Document Register`: não abre PDFs, não executa OCR e
+não chama o LLM. Apenas linhas `lease_contract` da Property Extraction entram
+na tabela; a Document Register fornece os campos contratuais já resolvidos.
 
-Use `--reprocess-cadernetas` para uma reconstrução completa dos contratos
-elegíveis. Sem essa flag, o modo é incremental.
+Cada execução reconstrói integralmente a Property Table a partir dessas duas
+fontes, substituindo linhas obsoletas de forma atómica.
 
 ## Elegibilidade e fontes
 

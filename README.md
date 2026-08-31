@@ -412,8 +412,9 @@ PYTHONPATH=src python3 -m doc_register property-scan
 PYTHONPATH=src python3 -m doc_register scan --property-table
 ```
 
-`property-scan` é a etapa de elegibilidade: `--property-table` só processa
-PDFs já classificados como `lease_contract` na sheet `Property Extraction`.
+`property-scan` é a etapa de elegibilidade: `--property-table` materializa a
+Property Table a partir de `Property Extraction` e `Document Register`, sem
+voltar a abrir PDFs nem chamar o Ollama.
 
 Para reprocessar todos os contratos e substituir atomicamente as linhas já
 existentes pelo mesmo SHA-256:

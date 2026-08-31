@@ -61,30 +61,22 @@ class DocumentProcessor:
     ) -> int:
         self.config.ensure_directories()
         self._vision_failures = 0
+        if property_table:
+            contracts, rows = self.property_table_register.materialize_from_property_extraction()
+            LOGGER.info(
+                "Property Table materialized from Property Extraction: %s lease contract(s), %s row(s).",
+                contracts,
+                rows,
+            )
+            return contracts
         target_register = self.property_table_register if property_table else self.register
         existing_hashes = set() if reprocess_cadernetas else target_register.existing_hashes()
-        eligible_contract_hashes = (
-            self.property_table_register.eligible_contract_hashes()
-            if property_table else set()
-        )
-        if property_table and not eligible_contract_hashes:
-            LOGGER.warning(
-                "Property Table found no lease contracts in Property Extraction; "
-                "run property-scan before materializing the table."
-            )
         processed = 0
 
         for source_path in self._iter_pdf_files():
             candidate: PdfCandidate | None = None
             try:
-                digest = _sha256(source_path) if property_table else ""
-                if property_table and digest not in eligible_contract_hashes:
-                    LOGGER.info(
-                        "Skipping non-lease PDF for Property Table: %s",
-                        source_path.name,
-                    )
-                    continue
-                candidate = self._copy_candidate(source_path, digest=digest or None)
+                candidate = self._copy_candidate(source_path)
                 if candidate.sha256 in existing_hashes:
                     LOGGER.info("Skipping duplicate PDF: %s", source_path.name)
                     continue

@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import json
-import hashlib
 from tempfile import TemporaryDirectory
 import unittest
 from types import SimpleNamespace
@@ -296,44 +295,53 @@ def test_register_enriches_main_result_with_independent_property_extraction() ->
         assert all(row["property_row_status"] == "resolved" for row in rows)
 
 
-def test_property_table_scan_calls_main_pipeline_only_for_property_scan_leases() -> None:
+def test_property_table_materializes_sheets_without_opening_pdfs() -> None:
     try:
-        from openpyxl import Workbook
+        from openpyxl import Workbook, load_workbook
     except ImportError:
         return
 
     with TemporaryDirectory() as directory:
         root = Path(directory)
-        lease_path = root / "contract.pdf"
-        attachment_path = root / "IBAN.pdf"
-        lease_path.write_bytes(b"lease")
-        attachment_path.write_bytes(b"bank attachment")
-        lease_digest = hashlib.sha256(b"lease").hexdigest()
+        lease_digest = "c" * 64
         workbook_path = root / "register.xlsx"
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = PROPERTY_SHEET_NAME
         sheet.append(PROPERTY_REGISTER_COLUMNS)
         payload = {column: "" for column in PROPERTY_REGISTER_COLUMNS}
-        payload.update({"sha256": lease_digest, "document_type": "lease_contract"})
+        payload.update({
+            "sha256": lease_digest,
+            "document_type": "lease_contract",
+            "status": "processed_multi_property",
+            "source_file_name": "contract.pdf",
+            "properties": json.dumps([
+                {**_properties()[0], "matrix_key": "33-B", "property_article": "33", "property_section": "B", "matrix_article": "33", "matrix_section": "B"},
+            ]),
+        })
         sheet.append([payload[column] for column in PROPERTY_REGISTER_COLUMNS])
         workbook.save(workbook_path)
         workbook.close()
-        now = datetime.now(timezone.utc)
-        candidate = PdfCandidate(lease_path, lease_path, lease_digest, now, now)
         processor = DocumentProcessor(SimpleNamespace(
             excel_path=workbook_path,
             ensure_directories=lambda: None,
         ))
-        processor._iter_pdf_files = lambda: [lease_path, attachment_path]  # type: ignore[method-assign]
-        processor._copy_candidate = MagicMock(return_value=candidate)  # type: ignore[method-assign]
+        processor._iter_pdf_files = MagicMock()  # type: ignore[method-assign]
+        processor._copy_candidate = MagicMock()  # type: ignore[method-assign]
         processor._process_candidate = MagicMock()  # type: ignore[method-assign]
 
         processed = processor.scan_once(property_table=True, reprocess_cadernetas=True)
 
         assert processed == 1
-        processor._process_candidate.assert_called_once()
-        assert processor._copy_candidate.call_args.kwargs["digest"] == lease_digest
+        processor._iter_pdf_files.assert_not_called()
+        processor._copy_candidate.assert_not_called()
+        processor._process_candidate.assert_not_called()
+        workbook = load_workbook(workbook_path)
+        sheet = workbook[PROPERTY_TABLE_SHEET_NAME]
+        headers = [cell.value for cell in sheet[1]]
+        assert sheet.max_row == 2
+        assert sheet.cell(2, headers.index("property_matrix_key") + 1).value == "33-B"
+        workbook.close()
 
 
 def load_tests(loader, tests, pattern):
