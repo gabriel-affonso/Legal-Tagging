@@ -393,7 +393,7 @@ def _is_strong_identifier(value: str) -> bool:
 def is_definite_non_property_filename(name: str) -> bool:
     normalized = _fold(name)
     return bool(re.search(
-        r"\b(?:IBAN|NIB|PAGAMENTO|COMPROVATIVO|FATURA|FACTURA|RECIBO|TRANSFERENCIA|TRANSFERENCIA)\b",
+        r"(?<![A-Z0-9])(?:IBAN|NIB|PAGAMENTO|COMPROVATIVO|FATURA|FACTURA|RECIBO|TRANSFERENCIA)(?![A-Z0-9])",
         normalized,
         re.IGNORECASE,
     ))

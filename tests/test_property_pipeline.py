@@ -25,6 +25,7 @@ from doc_register.property_pack import (
     PropertyDocumentDescriptor,
     PropertyPackDiscovery,
     PropertyPackMatch,
+    is_definite_non_property_filename,
 )
 from doc_register.property_processor import _reconcile_property_evidence
 from doc_register.registry import ExcelRegister, PROPERTY_SHEET_NAME, PropertyExcelRegister
@@ -62,6 +63,7 @@ def load_tests(
         test_caderneta_area_magnitude_is_bounded,
         test_caderneta_mismatch_selects_one_atomic_identity,
         test_compound_external_property_pdf_preserves_every_caderneta,
+        test_iban_attachment_filename_is_excluded_from_property_scan,
     )
     return unittest.TestSuite(unittest.FunctionTestCase(function) for function in functions)
 
@@ -689,3 +691,8 @@ def test_compound_external_property_pdf_preserves_every_caderneta() -> None:
 
     assert match.status == "property_pack_multiple_preserved"
     assert [item.matrix_key for item in match.cadastral_properties] == ["10-F", "20-G"]
+
+
+def test_iban_attachment_filename_is_excluded_from_property_scan() -> None:
+    assert is_definite_non_property_filename("Contrato CA - IBAN_SP18511.pdf") is True
+    assert is_definite_non_property_filename("CadernetaPredial_SP18511.pdf") is False
