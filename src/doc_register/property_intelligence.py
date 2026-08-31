@@ -157,21 +157,9 @@ def _contiguous_group_starts(indexes: list[int]) -> list[int]:
 def parse_caderneta(pages: list[AnnexPage]) -> CadernetaValues:
     text = "\n".join(page.text for page in pages)
     return CadernetaValues(
-        property_name=_label_value(
-            text,
-            r"NOME\s*/?\s*LOCALIZACAO(?:\s+DO)?\s+PREDIO",
-            r"ELEMENTOS\s+DO\s+PREDIO|ARTIGO\s+MATRICIAL|MATRIZ\s+PREDIAL|SECCAO|TITULARES",
-        ),
-        matrix_article=_label_value(
-            text,
-            r"ARTIGO\s+MATRICIAL(?:\s+N[Oº.]*)?",
-            r"NOME\s*/?\s*LOCALIZACAO|ELEMENTOS\s+DO\s+PREDIO|SECCAO|TITULARES|AREA",
-        ),
-        matrix_section=_label_value(
-            text,
-            r"SECCAO",
-            r"ARTIGO\s+MATRICIAL|NOME\s*/?\s*LOCALIZACAO|ELEMENTOS\s+DO\s+PREDIO|TITULARES|AREA",
-        ).upper(),
+        property_name=_caderneta_property_name(text),
+        matrix_article=_caderneta_article(text),
+        matrix_section=_caderneta_section(text),
         area_m2=_caderneta_area(text),
         owner_name=_caderneta_owner(text),
     ).validated()
@@ -182,7 +170,7 @@ def assess_cadastral_evidence(pages: list[AnnexPage]) -> CadastralEvidence:
     values = parse_caderneta(pages)
     text = "\n".join(page.text for page in pages)
     normalized = _fold(text)
-    has_title = bool(re.search(r"\bcaderneta\s+predial\b", normalized, re.I))
+    has_title = bool(re.search(r"\bcaderneta\s+predial\s+(?:rustica|urbana)\b", normalized, re.I))
     has_property_header = bool(re.search(r"\bidentificacao\s+do\s+predio\b", normalized, re.I))
     has_holders = bool(re.search(r"\btitulares?\b", normalized, re.I))
     has_identity = bool(values.matrix_article and values.matrix_section)
@@ -397,7 +385,7 @@ def _has_caderneta_title(text: str) -> bool:
 def _label_value(text: str, label: str, stop: str) -> str:
     normalized = _fold(text)
     match = re.search(
-        rf"{label}\s*[:\-]?\s*(.+?)(?={stop}|$)",
+        rf"{label}\s*[\[\]|:;#\-]*\s*(.+?)(?={stop}|$)",
         normalized,
         re.IGNORECASE | re.DOTALL,
     )
@@ -405,8 +393,44 @@ def _label_value(text: str, label: str, stop: str) -> str:
         return ""
     # Accent folding preserves one character per source character, so these
     # offsets retain the original spelling/capitalization in the output.
-    value = re.sub(r"\s+", " ", text[match.start(1):match.end(1)]).strip(" .,:;-\n")
+    value = re.sub(r"\s+", " ", text[match.start(1):match.end(1)]).strip(" []|.,:;-\n")
     return value[:160]
+
+
+def _caderneta_article(text: str) -> str:
+    normalized = _fold(text)
+    match = re.search(
+        r"\bartigo\s+matricial(?:\s+n[Oº.]*)?\s*[:#-]?\s*(\d{1,8}(?:-[A-Z]{1,3})?)\b",
+        normalized,
+        re.IGNORECASE,
+    )
+    return match.group(1) if match else ""
+
+
+def _caderneta_property_name(text: str) -> str:
+    labelled = _label_value(
+        text,
+        r"NOME\s*/?\s*LOCALIZACAO(?:\s+DO)?\s+PREDIO",
+        r"ELEMENTOS\s+DO\s+PREDIO|ARTIGO\s+MATRICIAL|MATRIZ\s+PREDIAL|SECCAO|TITULARES",
+    )
+    if labelled:
+        return labelled
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        folded = _fold(line)
+        if not any(marker in folded for marker in ("LOCALIZA", "LIZACAO")) or "PREDIO" not in folded:
+            continue
+        for candidate_line in lines[index + 1:index + 4]:
+            candidate = candidate_line.strip(" []|.,:;-\t")
+            if candidate and not re.search(r"\b(?:ELEMENTOS|ARTIGO|SECCAO|DISTRITO|CONCELHO|FREGUESIA)\b", _fold(candidate)):
+                return candidate
+    return ""
+
+
+def _caderneta_section(text: str) -> str:
+    normalized = _fold(text)
+    match = re.search(r"\bseccao\s*[:#-]?\s*([A-Z]{1,3})\b", normalized, re.IGNORECASE)
+    return match.group(1).upper() if match else ""
 
 
 def _caderneta_area(text: str) -> int | float | None:
@@ -430,6 +454,19 @@ def _caderneta_owner(text: str) -> str:
 
 def _caderneta_owner_with_status(text: str) -> tuple[str, str]:
     normalized = _fold(text)
+    # Current AT cadernetas print a holder row in this exact field order.  It
+    # remains safe even when the OCR damages the TITULARES heading because the
+    # caller has already verified the surrounding cadastral structure.
+    holder_row = re.search(
+        r"\bidentifica[cç][aã]o\s+fiscal\s*[:#-]?\s*\d{9}\s+nome\s*[:#-]?\s*"
+        r"(?P<name>.+?)(?=\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b|$)",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if holder_row:
+        cleaned = _clean_owner_name(holder_row.group("name"))
+        if cleaned:
+            return cleaned, "verified"
     holder = re.search(r"\btitulares?\b(?P<value>.*?)(?=\b(?:elementos\s+para\s+a\s+validacao|emitido\s+via|codigo\s+de\s+validacao)\b|$)", normalized, re.IGNORECASE | re.DOTALL)
     if not holder:
         return "", "owner_missing_titulares_label"

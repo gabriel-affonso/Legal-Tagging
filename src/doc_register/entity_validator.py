@@ -7,6 +7,16 @@ import unicodedata
 
 BLOCKED_ENTITY_LABELS = frozenset({"SENHORIO", "ARRENDATARIA", "ARRENDATARIO", "PARTE", "PROPRIETARIO", "LOCADOR", "LOCATARIO", "TITULAR"})
 KNOWN_OCR_GARBAGE = ("AC OS JE", "A GYAX AIS", "PEN CL RENAS")
+NON_ENTITY_PHRASES = (
+    "ANEXO", "IDENTIFICACAO DO", "DE ORA EM DIANTE", "DESIGNAD", "NA QUALIDADE",
+    "REGISTO PREDIAL", "CLAUSULA", "NOTIFICACAO", "CONDICAO SUSPENSIVA",
+    "PRAZO LIMITE", "RECEPCAO PELOS", "PARTE DA", "REALIZACAO NO PREDIO",
+    "AS PARTES", "RENDA", "CONSTRUCAO", "EXPLORACAO", "OBTENCAO",
+)
+NON_ENTITY_STARTS = (
+    "DE ", "DA ", "DO ", "DOS ", "DAS ", "EM ", "ATE ", "APOS ", "CONTADOS ",
+    "QUALIDADE ", "INTERESSADA ", "NECESSARIA ", "FICAM ", "APENAS ",
+)
 
 
 def validate_entity(value: str) -> tuple[bool, str]:
@@ -19,6 +29,12 @@ def validate_entity(value: str) -> tuple[bool, str]:
         return False, "role_label"
     if any(bad in compact for bad in KNOWN_OCR_GARBAGE):
         return False, "known_ocr_garbage"
+    if any(phrase in compact for phrase in NON_ENTITY_PHRASES):
+        return False, "contract_phrase_not_entity"
+    if compact.startswith(NON_ENTITY_STARTS):
+        return False, "non_entity_leading_word"
+    if len(raw) > 160:
+        return False, "entity_too_long"
     tokens = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]{2,}", raw)
     letters = sum(char.isalpha() for char in raw)
     meaningful = sum(char.isalpha() for char in raw if not char.isspace())

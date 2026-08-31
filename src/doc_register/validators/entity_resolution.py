@@ -297,6 +297,13 @@ def _resolve_property_number(
     document_text: str,
     report: EntityResolutionReport,
 ) -> None:
+    if (result.document_category or "").strip().lower() not in {
+        "lease_contract", "property_document",
+    }:
+        # Filename codes are useful operational links for property/contract
+        # records, but a bank-detail filename may contain several property
+        # codes and must not publish them as a property number.
+        return
     current = str(result.property_number or "").strip()
     if current and is_invalid_property_number(current, document_text):
         _clear_field(result, report, "property_number", "invalid_property_number")

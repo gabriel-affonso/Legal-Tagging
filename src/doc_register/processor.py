@@ -32,6 +32,7 @@ from .validators.contract_final_resolution import (
     prepare_contract_final_resolution,
 )
 from .validators.integration import recover_validate_result
+from .validators.output_safety import apply_output_safety
 from .validators.validator import validate_result
 
 
@@ -326,6 +327,7 @@ class DocumentProcessor:
         # field-specific source ranking and consensus as the final publisher.
         result = apply_contract_final_resolution(result, final_resolution_report)
         result = apply_field_centric_extraction(result, step33_report)
+        result = apply_output_safety(result, document_text=document_text)
         result = validate_result(
             result,
             signals,

@@ -232,7 +232,34 @@ def validate_final_resolution_conflicts(record: Any) -> list[str]:
     conflicts = resolution.get("conflicts", [])
     if not isinstance(conflicts, list):
         return []
-    return sorted({str(item.get("type") or "") for item in conflicts if isinstance(item, dict) and item.get("type")})
+    return sorted({
+        str(item.get("type") or "")
+        for item in conflicts
+        if isinstance(item, dict) and item.get("type") and not _superseded_final_conflict(record, item)
+    })
+
+
+def _superseded_final_conflict(record: Any, conflict: dict[str, Any]) -> bool:
+    conflict_type = str(conflict.get("type") or "")
+    raw = record.get("raw_json", {}) if isinstance(record, dict) else getattr(record, "raw_json", {})
+    report = raw.get("step3_3_field_centric", {}) if isinstance(raw, dict) else {}
+    evidence = report.get("field_evidence", {}) if isinstance(report, dict) else {}
+    if not isinstance(evidence, dict):
+        return False
+    if conflict_type == "contract_caderneta_field_conflict":
+        field = str(conflict.get("field") or "")
+        item = evidence.get(field, {})
+        return isinstance(item, dict) and str(item.get("source") or "").lower() in {"caderneta", "crp"}
+    if conflict_type == "multiple_internal_cadernetas_unresolved":
+        fields = ("property_article", "property_section", "property_name")
+        return any(
+            isinstance(evidence.get(field), dict)
+            and str(evidence[field].get("source") or "").lower() == "caderneta"
+            for field in fields
+        )
+    if conflict_type in {"ownership_source_conflict", "cadastral_owner_matches_lessee"}:
+        return not _get(record, "owner_name")
+    return False
 
 def requires_monthly_rent(record: Any) -> bool:
     if _get(record, "document_category").lower() != "lease_contract":

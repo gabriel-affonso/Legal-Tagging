@@ -32,7 +32,7 @@ def canonical_source(source: str) -> str:
 def source_score(field: str, source: str) -> int:
     source = canonical_source(source)
     if field in PARTY_FIELDS:
-        return {"IDENTIFICATION_ANNEX": 100, "NOTARIZATION": 95, "CONTRACT": 90, "SIGNATURE": 85, "CRP": 75, "OCR_RESIDUAL": 10}.get(source, 10)
+        return {"NOTARIZATION": 100, "IDENTIFICATION_ANNEX": 95, "CONTRACT": 90, "SIGNATURE": 85, "CRP": 75, "OCR_RESIDUAL": 10}.get(source, 10)
     if field in OWNERSHIP_FIELDS:
         return {"CADERNETA": 100, "CRP": 90, "CONTRACT": 50, "OCR_RESIDUAL": 10}.get(source, 10)
     if field in CONTRACT_FIELDS:

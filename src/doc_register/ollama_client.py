@@ -234,7 +234,7 @@ def extract_with_ollama(
     except RuntimeError as exc:
         return _runtime_fallback_result(signals, "classification", exc)
 
-    category = _normalize_category(classification.get("document_category", signals.suggested_category))
+    category = _select_category(classification, signals)
     try:
         extraction = extract_metadata_with_ollama(
             base_url,
@@ -269,6 +269,7 @@ def extract_with_ollama(
          ),
         }
     merged = {**classification, **extraction, "document_category": category}
+    _enforce_category_metadata(merged, category)
     llm_json = {"classification": classification, "extraction": extraction}
     return _result_from_dict(
         {
@@ -564,6 +565,33 @@ def _normalize_category(category: str) -> str:
     if value == "identification":
         value = "identity_document"
     return value if value in OFFICIAL_CATEGORIES else "other"
+
+
+def _select_category(classification: dict[str, Any], signals: DeterministicSignals) -> str:
+    """Keep a high-signal filename category from being downgraded by OCR."""
+    model_category = _normalize_category(str(classification.get("document_category") or ""))
+    filename_category = _normalize_category(signals.file_category)
+    # A file explicitly labelled IBAN/NIB/BIC is an account-details document;
+    # mixed OCR often made the Step 3.2 model call it ``other`` or caderneta.
+    if filename_category == "bank_details":
+        return filename_category
+    if model_category == "other" and filename_category != "other":
+        return filename_category
+    return model_category if model_category != "other" else _normalize_category(signals.suggested_category)
+
+
+def _enforce_category_metadata(payload: dict[str, Any], category: str) -> None:
+    if category != "bank_details":
+        return
+    value = str(payload.get("document_type") or "").strip().lower()
+    allowed = {"bank_details", "bank_account_details", "iban_certificate", "bank_account_certificate"}
+    if value not in allowed:
+        payload["document_type"] = "bank_account_details"
+    # A bank-account holder is not the cadastral owner.  This field can still
+    # be used for property documents, but must remain empty for bank records.
+    payload["owner_name"] = ""
+    payload["owner_tax_id"] = ""
+    payload["owner_address"] = ""
 
 
 CLASSIFICATION_FIELDS = {

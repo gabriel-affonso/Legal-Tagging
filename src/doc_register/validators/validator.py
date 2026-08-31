@@ -139,11 +139,21 @@ def _cross_field_signal_issues(result: ExtractionResult, signals: Any | None) ->
     signal_section = str(getattr(signals, "property_section", "") or "").strip()
     result_article = str(result.property_article or "").strip()
     result_section = str(result.property_section or "").strip()
-    if signal_article and result_article and signal_article != result_article:
+    if signal_article and result_article and signal_article != result_article and not _has_authoritative_step33_evidence(result, "property_article"):
         issues.append("property_article_conflicts_with_deterministic")
-    if signal_section and result_section and signal_section.upper() != result_section.upper():
+    if signal_section and result_section and signal_section.upper() != result_section.upper() and not _has_authoritative_step33_evidence(result, "property_section"):
         issues.append("property_section_conflicts_with_deterministic")
     return issues
+
+
+def _has_authoritative_step33_evidence(result: ExtractionResult, field: str) -> bool:
+    raw = result.raw_json if isinstance(result.raw_json, dict) else {}
+    report = raw.get("step3_3_field_centric", {}) if isinstance(raw, dict) else {}
+    evidence = report.get("field_evidence", {}) if isinstance(report, dict) else {}
+    item = evidence.get(field, {}) if isinstance(evidence, dict) else {}
+    if not isinstance(item, dict):
+        return False
+    return str(item.get("source") or "").lower() in {"caderneta", "crp"} and bool(item.get("value"))
 
 
 def determine_technical_status(result: ExtractionResult) -> str:
