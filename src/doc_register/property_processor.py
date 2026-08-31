@@ -253,7 +253,7 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
     }
 
 
-PIPELINE_VERSION = "3.3.2"
+PIPELINE_VERSION = "3.3.3"
 
 
 def _with_property_pack_audit(result, match: PropertyPackMatch):

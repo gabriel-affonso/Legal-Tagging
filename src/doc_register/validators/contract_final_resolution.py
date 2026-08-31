@@ -44,8 +44,9 @@ PLACE_RE = {
 AREA_RE = re.compile(r"\b(?:[aá]rea\s+total|[aá]rea\s+do\s+pr[eé]dio)\s*[:#-]?\s*(\d+(?:[.,]\d+)?)\s*(ha|hectares?|m2|m²)\b", re.I)
 SECTION_FIELD_RE = re.compile(r"\bsec(?:c|ç)[aã]o\s*[:#-]?\s*([A-Z]{1,3})\b", re.I)
 PARCEL_AREA_RE = re.compile(r"\b(?:parcela\s+(?:arrendada|ocupada)|[aá]rea\s+(?:arrendada|ocupada))\D{0,60}?(\d+(?:[.,]\d+)?)\s*(ha|hectares?|m2|m²)\b", re.I)
-RENT_RE = re.compile(r"\b(?:renda|contrapartida|remunera[cç][aã]o)\D{0,100}?(\d+(?:[.,]\d{1,6})?)\s*(EUR|€|euros?)\D{0,80}?(?:por\s+hectare|/\s*ha|ha)\D{0,50}?(?:por\s+ano|anuais?|anual)\b", re.I)
-MONTHLY_RENT_RE = re.compile(r"\b(?:renda\s+mensal|mensalidade)\D{0,80}?(\d+(?:[.,]\d{1,2})?)\s*(EUR|€|euros?)\b", re.I)
+MONEY_NUMBER_RE = r"(\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,6})?|\d+(?:[.,]\d{1,6})?)"
+RENT_RE = re.compile(r"\b(?:renda|contrapartida|remunera[cç][aã]o)\D{0,100}?" + MONEY_NUMBER_RE + r"\s*(EUR|€|euros?)\D{0,80}?(?:por\s+hectare|/\s*ha|ha)\D{0,50}?(?:por\s+ano|anuais?|anual)\b", re.I)
+MONTHLY_RENT_RE = re.compile(r"\b(?:renda\s+mensal|mensalidade)\D{0,80}?" + MONEY_NUMBER_RE + r"\s*(EUR|€|euros?)\b", re.I)
 DATE_RE = r"(?:\d{1,2}[/-]\d{1,2}[/-](?:19|20)\d{2}|(?:19|20)\d{2}-\d{2}-\d{2})"
 GENERIC_PROPERTY = {"SENHORIO 1", "SENHORIO 2", "SENHORIOS", "ARRENDATARIO", "ARRENDATARIA", "PROPRIETARIO", "PREDIO", "PARCELA", "ANEXO", "CONTRATO", "CENTRAL SOLAR", "OUTORGANTE", "PARTE", "PARTES"}
 KNOWN_PLACE = {"PENAS ROIAS": "Penas Roias", "PEWAS ROIAS": "Penas Roias", "MOGADOURO": "Mogadouro", "BRAGANCA": "Bragança"}
@@ -87,6 +88,8 @@ class FactCandidate:
     score_components: dict[str, float]
     final_score: float
     rejection_reason: str = ""
+    supporting_evidence: tuple[str, ...] = ()
+    contradicting_evidence: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -136,12 +139,13 @@ class ContractResolutionReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "version": "2.9.1", "active": self.active,
+            "version": "3.3.3", "active": self.active,
             "document_zones": [item.to_dict() for item in self.zones],
             "page_quality_summary": [item.to_dict() for item in self.page_quality],
             "entities": list(self.entities.values()),
             "field_candidates": [item.to_dict() for item in self.candidates],
             "field_decisions": self.decisions, "conflicts": self.conflicts,
+            "ownership_evidence": _ownership_snapshot(self),
             "cadastral_evidence": self.cadastral_evidence,
             "unresolved_fields": self.unresolved_fields,
             "metrics": {"candidate_count": len(self.candidates), "zone_count": len(self.zones)},
@@ -180,7 +184,7 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
             value = "; ".join(item.normalized_value for item in selected) if isinstance(selected, list) else selected.normalized_value
             setattr(result, field_name, value)
             primary = selected[0] if isinstance(selected, list) else selected
-            report.decisions[field_name] = _decision(primary, value, "accepted")
+            report.decisions[field_name] = _decision(primary, value, "accepted", candidates)
         elif field_name in _strict_fields() and str(getattr(result, field_name, "") or ""):
             setattr(result, field_name, "")
             report.decisions[field_name] = {"field": field_name, "selected_value": "", "decision": "blocked", "reason": "no_valid_structured_candidate", "requires_review": True}
@@ -194,7 +198,7 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
     if cadastral_owners:
         result.owner_name = "; ".join(item.normalized_value for item in cadastral_owners)
         report.decisions["owner_name"] = _decision(
-            cadastral_owners[0], result.owner_name, "accepted"
+            cadastral_owners[0], result.owner_name, "accepted", cadastral_owners
         )
     else:
         # In the register, ``owner_name`` means cadastral title holder, not
@@ -213,6 +217,16 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
     )
     if result.rent_frequency and result.rent_frequency != "monthly":
         result.monthly_rent = ""
+        report.decisions["monthly_rent"] = {
+            "field": "monthly_rent",
+            "selected_value": "",
+            "decision": "not_applicable",
+            "confidence": 1.0,
+            "selected_candidate_id": "",
+            "rejected_candidate_ids": [],
+            "reason": "annual_or_non_monthly_rent_extracted",
+            "requires_review": False,
+        }
     if report.conflicts:
         result.human_review_required = "yes"
         conflict_reasons = "; ".join(
@@ -410,6 +424,7 @@ def _candidate(field_name: str, value: str, zone: DocumentZone, role: str, patte
         ocr_quality=zone.ocr_quality, source_authority=authority, semantic_confidence=semantic,
         validation_status="valid" if valid else "blocked", score_components={"authority": authority, "semantic": semantic, "ocr": zone.ocr_quality}, final_score=score,
         rejection_reason=reason,
+        supporting_evidence=(zone.text_span[:600],) if valid else (),
     )
 
 
@@ -599,8 +614,63 @@ def _declared_owner_value(report: ContractResolutionReport) -> str:
     return "; ".join(item.normalized_value for item in _select_many(item for item in report.candidates if item.field == "lessor" and item.validation_status == "valid"))
 
 
-def _decision(candidate: FactCandidate, value: str, decision: str) -> dict[str, object]:
-    return {"field": candidate.field, "selected_value": value, "decision": decision, "confidence": round(candidate.final_score, 3), "selected_candidate_id": candidate.candidate_id, "rejected_candidate_ids": [], "reason": candidate.matched_pattern, "requires_review": False}
+def _ownership_snapshot(report: ContractResolutionReport) -> dict[str, object]:
+    """Keep contract and cadastral ownership distinct in the public audit.
+
+    A contract may call the lessors owners while a caderneta identifies a
+    different taxable holder.  Both facts are useful and neither is silently
+    promoted into the other.
+    """
+    contract_lessors = [
+        item.normalized_value
+        for item in _select_many(
+            item for item in report.candidates
+            if item.field == "lessor" and item.validation_status == "valid"
+        )
+    ]
+    declared = _declared_owner_value(report)
+    cadastral = [
+        item.normalized_value
+        for item in _select_many(
+            item for item in report.candidates
+            if item.field == "cadastral_owner"
+            and item.validation_status == "valid"
+        )
+    ]
+    return {
+        "contract_lessors": contract_lessors,
+        "declared_owners": contract_lessors if declared else [],
+        "cadastral_owners": cadastral,
+        "registered_owners": [],
+        "ownership_conflicts": [
+            item for item in report.conflicts
+            if str(item.get("type") or "").startswith("ownership_")
+            or item.get("type") == "cadastral_owner_matches_lessee"
+        ],
+    }
+
+
+def _decision(
+    candidate: FactCandidate,
+    value: str,
+    decision: str,
+    alternatives: Iterable[FactCandidate] = (),
+) -> dict[str, object]:
+    """Make both acceptance and rejection inspectable in the audit payload."""
+    rejected = [
+        item.candidate_id for item in alternatives
+        if item.candidate_id != candidate.candidate_id
+    ]
+    return {
+        "field": candidate.field,
+        "selected_value": value,
+        "decision": decision,
+        "confidence": round(candidate.final_score, 3),
+        "selected_candidate_id": candidate.candidate_id,
+        "rejected_candidate_ids": rejected,
+        "reason": candidate.matched_pattern,
+        "requires_review": False,
+    }
 
 
 def _field_names() -> tuple[str, ...]:
@@ -704,7 +774,16 @@ def _area(number: str, unit: str) -> str:
 
 
 def _money(number: str, currency: str) -> tuple[str, str]:
-    return number.replace(",", "."), "EUR" if currency.upper() in {"EUR", "€", "EURO", "EUROS"} else currency.upper()
+    value = re.sub(r"\s+", "", number)
+    if "," in value:
+        value = value.replace(".", "").replace(",", ".")
+    elif value.count(".") > 1:
+        value = value.replace(".", "")
+    try:
+        value = f"{float(value):.2f}"
+    except ValueError:
+        pass
+    return value, "EUR" if currency.upper() in {"EUR", "€", "EURO", "EUROS"} else currency.upper()
 
 
 def _normalize_value(field_name: str, value: str) -> str:

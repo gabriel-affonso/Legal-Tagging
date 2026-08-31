@@ -50,6 +50,8 @@ class AIReviewReport:
     reason: str = ""
     human_review_required: bool = False
     field_decisions: list[AIFieldDecision] = field(default_factory=list)
+    groups: dict[str, list[str]] = field(default_factory=dict)
+    group_failures: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

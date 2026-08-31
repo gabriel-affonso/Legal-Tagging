@@ -322,11 +322,13 @@ class DocumentProcessor:
             result,
             party_centric_report,
         )
-        # Step 2.8 is the only final publisher for contract fields. It runs
-        # after deterministic recovery and AI review.  Step 3.3 then applies
-        # field-specific source ranking and consensus as the final publisher.
-        result = apply_contract_final_resolution(result, final_resolution_report)
+        # Step 3.3 contributes field-specific, authoritative evidence before
+        # the final contract resolver.  Keeping that resolver last is
+        # deliberate: the register never depends on the order in which a
+        # recovery, the reviewer, or a source-specific extractor happened to
+        # run (no last-write-wins publication).
         result = apply_field_centric_extraction(result, step33_report)
+        result = apply_contract_final_resolution(result, final_resolution_report)
         result = apply_output_safety(result, document_text=document_text)
         result = validate_result(
             result,

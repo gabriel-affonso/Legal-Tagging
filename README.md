@@ -35,8 +35,10 @@ O processamento é híbrido e conservador:
 18. Step 2.8: resolvedor final de contratos-container. Deteta zonas por página, mede qualidade OCR granular e reúne candidatos estruturados antes de publicar qualquer campo no Excel.
 19. A autoridade é específica por campo: caderneta/registo vencem para artigo, secção e localização; designação explícita vence para papéis contratuais; e fórmulas de assinatura vencem para datas. Conflitos entre titulares declarados e cadastrais são preservados e exigem revisão.
 20. A renda passa a suportar frequência e unidade. Renda anual por hectare preenche `rent_*` e `annual_rent`, sem inventar ou exigir `monthly_rent`.
-21. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-22. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+21. Step 3.3.3: o resolvedor de contratos é o único publicador final após fontes especializadas. O audit inclui candidatos rejeitados, decisão final, evidência de titularidade separada (`contract_lessors`, `declared_owners`, `cadastral_owners`) e conflitos preservados.
+22. A revisão por IA é segmentada em grupos de partes, imóvel e datas/termos; timeout num grupo não descarta decisões já aceites noutro grupo.
+23. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+24. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -355,6 +357,16 @@ Para executar toda a suite:
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
+
+## Step 3.3.3 Finalização e tolerância a falhas de revisão
+
+O Step 3.3.3 mantém as fontes especializadas como produtoras de evidência e
+deixa a publicação no registo para o resolvedor final. O relatório em
+`raw_json["step2_7_final_resolution"]` inclui `ownership_evidence`, IDs de
+candidatos alternativos rejeitados e a decisão explícita de que uma renda
+anual por hectare não tem `monthly_rent` aplicável. A IA faz revisões menores
+e independentes; as falhas ficam auditadas sem reverter os resultados dos
+outros grupos. Veja [docs/step3.3.3.md](docs/step3.3.3.md).
 
 ## Step 2.6 Entity Resolution
 

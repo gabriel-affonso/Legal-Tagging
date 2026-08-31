@@ -11,6 +11,13 @@ from .review_policy import should_review
 from .reviewer import request_ai_review
 
 
+REVIEW_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("party_resolution", frozenset({"lessor", "lessee", "owner_name", "owner_tax_id", "lessee_tax_id"})),
+    ("property_resolution", frozenset({"property_name", "property_article", "property_section", "property_parish", "property_municipality", "property_district", "property_total_area", "leased_parcel_area"})),
+    ("dates_and_terms", frozenset({"signed_date", "contract_start_date", "contract_end_date", "monthly_rent", "annual_rent", "rent_amount", "rent_frequency", "rent_unit"})),
+)
+
+
 def review_if_needed(
     result: ExtractionResult,
     *,
@@ -38,65 +45,69 @@ def review_if_needed(
         _attach_report(result, report)
         return result
 
-    report.attempted = True
-    evidence_text = select_evidence(
-        document_text,
-        plan.fields,
-        max_chars=int(getattr(config, "ai_review_max_evidence_chars", 6500)),
-    )
-    request = AIReviewRequest(
-        result=result,
-        file_name=file_name,
-        fields=plan.fields,
-        issues=plan.issues,
-        evidence_text=evidence_text,
-    )
-
-    try:
-        proposals = request_ai_review(
-            base_url=config.ollama_url,
-            model=config.ollama_model,
-            request=request,
-            timeout_seconds=int(getattr(config, "ai_review_timeout_seconds", 180)),
-        )
-    except Exception as exc:
-        report.status = "FAILED"
-        report.reason = f"ai_review_failed: {str(exc)[:300]}"
-        report.human_review_required = True
-        report.duration_seconds = time.monotonic() - started_at
-        _attach_report(result, report)
-        return result
-
     policy = AcceptancePolicy(
         auto_accept_confidence=float(getattr(config, "ai_review_auto_accept_confidence", 0.90)),
         human_confidence=float(getattr(config, "ai_review_human_confidence", 0.70)),
     )
-    decisions = [
-        validate_proposal(
-            proposal,
-            result,
-            document_text=document_text,
-            evidence_text=evidence_text,
-            policy=policy,
+    report.attempted = True
+    for group_name, fields in _review_groups(plan.fields):
+        report.groups[group_name] = fields
+        group_issues = [
+            issue for issue in plan.issues
+            if _issue_field(issue) in fields or _issue_field(issue) == ""
+        ]
+        evidence_text = select_evidence(
+            document_text,
+            fields,
+            max_chars=int(getattr(config, "ai_review_max_evidence_chars", 6500)),
         )
-        for proposal in proposals
-    ]
-    report.field_decisions = decisions
-    for decision in decisions:
-        if decision.decision == "AUTO_ACCEPTED":
-            setattr(result, decision.field_name, decision.proposed_value)
-            if decision.field_name not in report.accepted_fields:
-                report.accepted_fields.append(decision.field_name)
-        elif decision.decision == "AI_PROPOSED_HUMAN_REQUIRED":
-            if decision.field_name not in report.human_required_fields:
-                report.human_required_fields.append(decision.field_name)
+        request = AIReviewRequest(
+            result=result,
+            file_name=file_name,
+            fields=fields,
+            issues=group_issues,
+            evidence_text=evidence_text,
+        )
+        try:
+            proposals = request_ai_review(
+                base_url=config.ollama_url,
+                model=config.ollama_model,
+                request=request,
+                timeout_seconds=int(getattr(config, "ai_review_timeout_seconds", 180)),
+            )
+        except Exception as exc:
+            # A timeout for property evidence must not roll back a party
+            # decision already made in a prior group.
+            report.group_failures[group_name] = str(exc)[:300]
             report.human_review_required = True
-        else:
-            if decision.field_name not in report.rejected_fields:
+            continue
+        decisions = [
+            validate_proposal(
+                proposal,
+                result,
+                document_text=document_text,
+                evidence_text=evidence_text,
+                policy=policy,
+            )
+            for proposal in proposals
+        ]
+        report.field_decisions.extend(decisions)
+        for decision in decisions:
+            if decision.decision == "AUTO_ACCEPTED":
+                setattr(result, decision.field_name, decision.proposed_value)
+                if decision.field_name not in report.accepted_fields:
+                    report.accepted_fields.append(decision.field_name)
+            elif decision.decision == "AI_PROPOSED_HUMAN_REQUIRED":
+                if decision.field_name not in report.human_required_fields:
+                    report.human_required_fields.append(decision.field_name)
+                report.human_review_required = True
+            elif decision.field_name not in report.rejected_fields:
                 report.rejected_fields.append(decision.field_name)
 
     report.remaining_issues = run_all_validations(result)
     report.status = _status_for(report, plan.fields)
+    if report.group_failures:
+        report.reason = "partial_group_failures: " + "; ".join(sorted(report.group_failures))
     if report.remaining_issues:
         report.human_review_required = True
     report.duration_seconds = time.monotonic() - started_at
@@ -107,11 +118,42 @@ def review_if_needed(
 def _status_for(report: AIReviewReport, requested_fields: list[str]) -> str:
     if not report.attempted:
         return report.status
+    if report.group_failures and not report.accepted_fields:
+        return "FAILED"
+    if report.group_failures:
+        return "PARTIALLY_RESOLVED"
     if report.accepted_fields and len(report.accepted_fields) == len(requested_fields):
         return "RESOLVED"
     if report.accepted_fields:
         return "PARTIALLY_RESOLVED"
     return "COMPLETED"
+
+
+def _review_groups(fields: list[str]) -> list[tuple[str, list[str]]]:
+    """Return small independent review calls while retaining an unknown group."""
+    remaining = list(dict.fromkeys(fields))
+    groups: list[tuple[str, list[str]]] = []
+    for name, supported in REVIEW_GROUPS:
+        selected = [field for field in remaining if field in supported]
+        if selected:
+            groups.append((name, selected))
+            remaining = [field for field in remaining if field not in selected]
+    if remaining:
+        groups.append(("other", remaining))
+    return groups
+
+
+def _issue_field(issue: str) -> str:
+    for field_name in (
+        "property_total_area", "leased_parcel_area", "property_article", "property_section",
+        "property_name", "property_parish", "property_municipality", "property_district",
+        "lessee_tax_id", "owner_tax_id", "monthly_rent", "annual_rent", "rent_amount",
+        "rent_frequency", "rent_unit", "contract_start_date", "contract_end_date",
+        "signed_date", "lessor", "lessee", "owner_name",
+    ):
+        if field_name in issue:
+            return field_name
+    return ""
 
 
 def _attach_report(result: ExtractionResult, report: AIReviewReport) -> None:
