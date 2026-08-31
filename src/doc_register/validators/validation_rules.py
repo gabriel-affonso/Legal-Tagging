@@ -28,7 +28,7 @@ CRITICAL_FIELDS: dict[str, list[str]] = {
     "bank_details": ["iban", "bank_account_holder"],
     "payment_proof": ["payment_date", "payer", "payee", "payment_amount"],
 }
-VALID_PROPERTY_SECTION_PATTERN = re.compile(r"^[A-Z]{1,3}$")
+VALID_PROPERTY_SECTION_PATTERN = re.compile(r"^[A-Z]$")
 YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 IBAN_ALLOWED_PATTERN = re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$")
 MONEY_PATTERN = re.compile(r"^(?:EUR\s*)?(?:\d{1,3}(?:[.\s]\d{3})*|\d+)(?:,\d{1,2})?\s*(?:EUR|€)?$", re.I)
@@ -55,10 +55,12 @@ def extract_year(value: str) -> int | None:
 
 def validate_missing_critical_fields(record: Any) -> list[str]:
     category = _get(record, "document_category").lower()
+    structured_multi = _has_structured_cadastral_properties(record)
     issues = [
         f"missing_{field}"
         for field in CRITICAL_FIELDS.get(category, [])
         if not _get(record, field)
+        and not (structured_multi and field in {"property_article", "property_section"})
     ]
     if category == "lease_contract" and requires_monthly_rent(record) and not _get(record, "monthly_rent"):
         issues.append("missing_monthly_rent")
@@ -235,8 +237,18 @@ def validate_final_resolution_conflicts(record: Any) -> list[str]:
     return sorted({
         str(item.get("type") or "")
         for item in conflicts
-        if isinstance(item, dict) and item.get("type") and not _superseded_final_conflict(record, item)
+        if isinstance(item, dict)
+        and item.get("type")
+        and item.get("requires_review") is not False
+        and not _superseded_final_conflict(record, item)
     })
+
+
+def _has_structured_cadastral_properties(record: Any) -> bool:
+    raw = record.get("raw_json", {}) if isinstance(record, dict) else getattr(record, "raw_json", {})
+    report = raw.get("step3_3_field_centric", {}) if isinstance(raw, dict) else {}
+    properties = report.get("cadastral_properties", []) if isinstance(report, dict) else []
+    return isinstance(properties, list) and len(properties) > 1
 
 
 def _superseded_final_conflict(record: Any, conflict: dict[str, Any]) -> bool:

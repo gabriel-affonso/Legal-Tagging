@@ -30,7 +30,7 @@ CONTEXTUAL_NIF_RE = re.compile(
 # as "da secção", which previously produced values like "440 da sec".
 ARTICLE_RE = re.compile(
     r"\b(?:artigo(?:\s+matricial)?|art\.?)\s*(?:n[.ºo°]*\s*)?[:#-]?\s*"
-    r"([0-9]{1,10}(?:\s*[-/]\s*[A-Z0-9]{1,10})?|[A-Z]{1,4}\s*-?\s*[0-9]{1,10})\b",
+    r"([0-9]{1,10}(?:\s*ARV)?)\b",
     re.IGNORECASE,
 )
 MATRIX_ARTICLE_RE = re.compile(
@@ -41,12 +41,12 @@ MATRIX_ARTICLE_RE = re.compile(
 # Portuguese matrix sections are normally short alphabetic identifiers. Words
 # such as CONFRONTA can no longer be accepted as a section.
 SECTION_RE = re.compile(
-    r"\bsec(?:c|ç)[aã]o\s*(?:n[.ºo°]*\s*)?[:#-]?\s*([A-Z]{1,3})\b",
+    r"\bsec(?:c|ç)[aã]o\s*(?:n[.ºo°]*\s*)?[:#-]?\s*([A-Z])\b",
     re.IGNORECASE,
 )
 ARTICLE_SECTION_RE = re.compile(
     r"\b(?:artigo|matriz)\s*(?:n[.ºo°]*\s*)?[:#-]?\s*([0-9]{1,10})"
-    r"(?:\s*(?:,|-)?\s*sec(?:c|ç)[aã]o\s*[:#-]?\s*([A-Z]{1,3}))?\b",
+    r"(?:\s*(?:,|-)?\s*sec(?:c|ç)[aã]o\s*[:#-]?\s*([A-Z]))?\b",
     re.IGNORECASE,
 )
 
@@ -256,13 +256,14 @@ def _first_valid_section(text: str) -> str:
 
 
 def _clean_identifier(value: str) -> str:
-    value = re.sub(r"\s*([/-])\s*", r"\1", value.strip().upper())
-    return value if re.fullmatch(r"(?:\d{1,10}(?:[-/][A-Z0-9]{1,10})?|[A-Z]{1,4}-?\d{1,10})", value) else ""
+    value = re.sub(r"\s+", "", value.strip().upper())
+    match = re.fullmatch(r"(\d{1,10})(?:ARV)?", value)
+    return match.group(1) if match else ""
 
 
 def _clean_section(value: str) -> str:
     value = value.strip().upper()
-    if not re.fullmatch(r"[A-Z]{1,3}", value):
+    if not re.fullmatch(r"[A-Z]", value):
         return ""
     if value in {"ART", "DA", "DE", "DO", "DOS", "DAS"}:
         return ""

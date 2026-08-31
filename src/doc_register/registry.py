@@ -32,6 +32,12 @@ PROPERTY_REGISTER_COLUMNS = (
     "property_matrix_key",
     "area_m2",
     "confidence",
+    "extraction_confidence",
+    "identity_confidence",
+    "completeness_score",
+    "consistency_score",
+    "final_confidence",
+    "properties",
     "lease_score",
     "candidate_score",
     "used_llm",
@@ -50,6 +56,7 @@ PROPERTY_REGISTER_COLUMNS = (
     "property_pack_match_score",
     "property_pack_match_method",
     "property_pack_candidate_count",
+    "property_pack_property_count",
     "caderneta_source_file",
     "crp_source_file",
     "caderneta_evidence_sources",
@@ -224,9 +231,12 @@ def _ensure_headers(sheet) -> bool:
                 row_data[header] = sheet.cell(row=row_index, column=column_index).value
         rows.append(row_data)
 
+    if sheet.max_row:
+        sheet.delete_rows(1, sheet.max_row)
     if sheet.max_column:
         sheet.delete_cols(1, sheet.max_column)
-    sheet.append(REGISTER_COLUMNS)
+    for column_index, header in enumerate(REGISTER_COLUMNS, start=1):
+        sheet.cell(row=1, column=column_index, value=header)
     for row_data in rows:
         sheet.append([row_data.get(column, "") for column in REGISTER_COLUMNS])
     return True
@@ -337,6 +347,7 @@ class PropertyExcelRegister:
             "caderneta_evidence_sources": 46,
             "internal_caderneta_status": 38,
             "internal_caderneta_count": 18,
+            "properties": 80,
             "audit": 80,
         }
         for index, header in enumerate(PROPERTY_REGISTER_COLUMNS, start=1):
@@ -366,9 +377,12 @@ def _ensure_property_headers(sheet) -> bool:
             for column_index, header in enumerate(existing_headers, start=1)
             if header
         })
+    if sheet.max_row:
+        sheet.delete_rows(1, sheet.max_row)
     if sheet.max_column:
         sheet.delete_cols(1, sheet.max_column)
-    sheet.append(PROPERTY_REGISTER_COLUMNS)
+    for column_index, header in enumerate(PROPERTY_REGISTER_COLUMNS, start=1):
+        sheet.cell(row=1, column=column_index, value=header)
     for row in rows:
         sheet.append([row.get(column, "") for column in PROPERTY_REGISTER_COLUMNS])
     return True

@@ -294,7 +294,7 @@ def test_real_template_multiple_properties_are_aligned_and_flat_fields_abstain()
     assert result.owner_name == "FREGUESIA DE PENAS ROIAS"
     assert [item["matrix_key"] for item in report.cadastral_properties] == ["4-L", "29-F", "98-G"]
     assert all(item["matched_contract_identity"] for item in report.cadastral_properties)
-    assert any(item["reason"] == "multiple_properties_require_structured_output" for item in report.blocked)
+    assert any(item["reason"] == "multiple_properties_preserved_in_structured_output" for item in report.blocked)
 
 
 def test_contract_recital_is_not_misclassified_as_registry_annex() -> None:

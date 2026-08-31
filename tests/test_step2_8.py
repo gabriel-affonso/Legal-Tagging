@@ -195,8 +195,8 @@ class Step28Tests(unittest.TestCase):
         )
 
         self.assertEqual(result.property_article, "")
-        self.assertEqual(result.cadastral_evidence_status, "multiple_internal_cadernetas_unresolved")
-        self.assertIn("multiple_internal_cadernetas_unresolved", result.cadastral_conflicts)
+        self.assertEqual(result.cadastral_evidence_status, "multiple_internal_cadernetas_preserved")
+        self.assertIn("multiple_internal_cadernetas_preserved", result.cadastral_conflicts)
 
 
 if __name__ == "__main__":

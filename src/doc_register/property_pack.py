@@ -10,18 +10,19 @@ from typing import Callable, Iterable
 import unicodedata
 
 from .detectors import detect_signals
-from .pdf_text import extract_pdf_text, extract_text_with_optional_ocr
+from .pdf_text import extract_pdf_caderneta_text, extract_text_with_optional_ocr
 from .property_intelligence import (
     CadastralEvidence,
     CadernetaValues,
     assess_cadastral_evidence,
-    discover_caderneta_pages,
+    discover_caderneta_groups,
     parse_caderneta,
 )
 from .property_pipeline import (
     PropertyExtraction,
     is_valid_matrix_article,
     is_valid_matrix_section,
+    normalize_matrix_article,
 )
 
 
@@ -40,6 +41,10 @@ class PropertyDocumentDescriptor:
     cadastral_evidence: CadastralEvidence | None = None
     crp_values: CadernetaValues | None = None
     sharepoint_sequence: int | None = None
+    group_index: int = 0
+    page_numbers: tuple[int, ...] = ()
+    filename_identifiers: frozenset[str] = frozenset()
+    filename_area_hints_m2: tuple[int | float, ...] = ()
 
     @property
     def is_caderneta(self) -> bool:
@@ -60,6 +65,7 @@ class PropertyPackMatch:
     crp_source_path: Path | None = None
     caderneta_values: CadernetaValues | None = None
     cadastral_evidence: CadastralEvidence | None = None
+    cadastral_properties: tuple[CadastralEvidence, ...] = ()
     catalog_status: str = "property_catalog_no_caderneta"
     catalog_text_source: str = ""
 
@@ -73,11 +79,12 @@ class PropertyPackMatch:
             "property_pack_candidate_count": self.candidate_count,
             "caderneta_source_file": self.source_path.name if self.source_path else "",
             "crp_source_file": self.crp_source_path.name if self.crp_source_path else "",
+            "property_pack_property_count": len(self.cadastral_properties) or int(self.cadastral_evidence is not None),
         }
 
 
 class PropertyPackDiscovery:
-    """Index only likely property documents, reusing cached OCR when available."""
+    """Index cadastral records in every PDF, reusing cached OCR when available."""
 
     def __init__(
         self,
@@ -90,6 +97,10 @@ class PropertyPackDiscovery:
         self._config = config
         self._text_loader = text_loader
         self._descriptors: tuple[PropertyDocumentDescriptor, ...] | None = None
+
+    def build_catalog(self) -> tuple[PropertyDocumentDescriptor, ...]:
+        """Complete phase one before any contract-to-property matching starts."""
+        return self._catalogue()
 
     def find_for_contract(
         self,
@@ -112,7 +123,30 @@ class PropertyPackDiscovery:
         if direct:
             direct.sort(key=lambda item: item[0], reverse=True)
             top_score, top_methods, top = direct[0]
-            if len([item for item in direct if item[0] == top_score]) > 1:
+            tied = [item for item in direct if item[0] == top_score]
+            if (
+                top_score >= MATCH_THRESHOLD
+                and "exact_property_identifier" in top_methods
+                and len(tied) > 1
+                and len({item[2].path for item in tied}) == 1
+            ):
+                evidences = tuple(
+                    item[2].cadastral_evidence
+                    for item in tied
+                    if item[2].cadastral_evidence is not None
+                )
+                if len(evidences) == len(tied):
+                    return PropertyPackMatch(
+                        status="property_pack_multiple_preserved",
+                        score=top_score,
+                        methods=top_methods,
+                        candidate_count=len(cadernetas),
+                        source_path=top.path,
+                        cadastral_properties=evidences,
+                        catalog_status="caderneta_catalogued",
+                        catalog_text_source=top.text_source,
+                    )
+            if len(tied) > 1:
                 return self._result("property_pack_ambiguous", top_score, (), len(cadernetas))
             if top_score >= MATCH_THRESHOLD:
                 return self._result("property_pack_matched", top_score, top_methods, len(cadernetas), top)
@@ -189,23 +223,29 @@ class PropertyPackDiscovery:
             return self._descriptors
         descriptors: list[PropertyDocumentDescriptor] = []
         for path in self._paths:
-            if not _is_property_candidate_name(path.name):
-                continue
             try:
                 text, source = self._read_candidate(path)
-                caderneta_pages = discover_caderneta_pages(text)
-                if caderneta_pages:
-                    cadastral_evidence = assess_cadastral_evidence(caderneta_pages)
-                    caderneta = cadastral_evidence.values
-                    descriptors.append(PropertyDocumentDescriptor(
-                        path=path,
-                        identifiers=frozenset(_identifiers(path.name, text, caderneta.matrix_article)),
-                        kind="caderneta_predial",
-                        text_source=source,
-                        caderneta_values=caderneta,
-                        cadastral_evidence=cadastral_evidence,
-                        sharepoint_sequence=_sharepoint_sequence(path.name),
-                    ))
+                groups = discover_caderneta_groups(text)
+                filename_evidence = _filename_evidence(path.name)
+                if groups:
+                    for group_index, caderneta_pages in enumerate(groups, start=1):
+                        cadastral_evidence = assess_cadastral_evidence(caderneta_pages)
+                        if not cadastral_evidence.is_structurally_valid:
+                            continue
+                        caderneta = cadastral_evidence.values
+                        descriptors.append(PropertyDocumentDescriptor(
+                            path=path,
+                            identifiers=frozenset(_identifiers(path.name, "\n".join(page.text for page in caderneta_pages), caderneta.matrix_article)),
+                            kind="caderneta_predial",
+                            text_source=source,
+                            caderneta_values=caderneta,
+                            cadastral_evidence=cadastral_evidence,
+                            sharepoint_sequence=_sharepoint_sequence(path.name),
+                            group_index=group_index,
+                            page_numbers=tuple(page.page_number for page in caderneta_pages),
+                            filename_identifiers=frozenset(filename_evidence[0]),
+                            filename_area_hints_m2=filename_evidence[1],
+                        ))
                     continue
                 crp = _parse_crp(path.name, text)
                 if crp:
@@ -216,6 +256,8 @@ class PropertyPackDiscovery:
                         text_source=source,
                         crp_values=crp,
                         sharepoint_sequence=_sharepoint_sequence(path.name),
+                        filename_identifiers=frozenset(filename_evidence[0]),
+                        filename_area_hints_m2=filename_evidence[1],
                     ))
             except Exception as exc:
                 LOGGER.warning("Could not index property-pack candidate %s: %s", path.name, exc)
@@ -231,7 +273,13 @@ class PropertyPackDiscovery:
         if self._text_loader:
             return self._text_loader(path)
         if self._config is None:
-            return extract_pdf_text(path, max_pages=3, max_chars=6000, preserve_layout=True), "native_pdf"
+            return extract_pdf_caderneta_text(path), "native_pdf_full"
+        cached_ocr = self._config.ocr_dir / f"{path.stem}__ocr.pdf"
+        if cached_ocr.is_file():
+            return extract_pdf_caderneta_text(cached_ocr), "cached_ocr_full"
+        full_native = extract_pdf_caderneta_text(path)
+        if discover_caderneta_groups(full_native):
+            return full_native, "native_pdf_full"
         extracted = extract_text_with_optional_ocr(
             path,
             max_pages=self._config.max_pdf_pages,
@@ -284,9 +332,9 @@ def _parse_crp(file_name: str, text: str) -> CadernetaValues | None:
     ))
     if not filename_is_crp and not text_is_crp:
         return None
-    article_match = re.search(r"\bartigo(?:\s+matricial)?\D{0,20}(\d{1,10}[A-Z]?)\b", normalized, re.IGNORECASE)
+    article_match = re.search(r"\bartigo(?:\s+matricial)?\D{0,20}(\d{1,10}(?:\s*ARV)?)\b", normalized, re.IGNORECASE)
     section_match = re.search(r"\bseccao\D{0,15}([A-Z])\b", normalized, re.IGNORECASE)
-    article = article_match.group(1).upper() if article_match else ""
+    article = normalize_matrix_article(article_match.group(1)).canonical if article_match else ""
     section = section_match.group(1).upper() if section_match else ""
     signals = detect_signals(file_name, text)
     if not article and is_valid_matrix_article(signals.property_article):
@@ -310,11 +358,10 @@ def _facts_agree(first: CadernetaValues | None, second: CadernetaValues | None) 
 
 def _matrix_article_from_filename(file_name: str) -> str:
     normalized = re.sub(r"[_\s]", "-", file_name.upper())
-    match = re.search(r"(?:CRP-)?(?:VA|PR)-(\d{1,10}(?:-?[A-Z]{1,3})?)\b", normalized)
+    match = re.search(r"(?:ARTIGO|ART|MATRIZ|MAT)-(\d{1,10}(?:ARV)?)\b", normalized)
     if not match:
         return ""
-    value = match.group(1).replace("-", "")
-    return value if is_valid_matrix_article(value) else ""
+    return normalize_matrix_article(match.group(1)).canonical
 
 
 def _same_article(first: str, second: str) -> bool:
@@ -325,21 +372,35 @@ def _identifiers(file_name: str, text: str, matrix_article: str) -> set[str]:
     source = re.sub(r"[_\-]", " ", f"{file_name}\n{text}").upper()
     identifiers = {
         f"{prefix}{number}"
-        for prefix, number in re.findall(r"\b(VA|PR)[_\-\s]*(\d{1,6}[A-Z]?)\b", source)
+        for prefix, number in re.findall(r"\b(VA|PR|TO)[_\-\s]*(\d{1,6}[A-Z]?)\b", source)
     }
-    identifiers.update(re.findall(r"\b\d{1,7}[A-Z]\b", source))
     if is_valid_matrix_article(matrix_article):
         identifiers.add(matrix_article.upper())
     return identifiers
 
 
-def _is_property_candidate_name(name: str) -> bool:
-    normalized = _fold(name)
-    return bool(re.search(r"caderneta|predial|crp|certidao|matriz|registo", normalized, re.IGNORECASE))
-
-
 def _is_strong_identifier(value: str) -> bool:
-    return bool(re.fullmatch(r"(?:VA|PR)\d{1,6}[A-Z]?|\d{1,7}[A-Z]", value))
+    return bool(re.fullmatch(r"(?:VA|PR|TO)\d{1,6}[A-Z]?", value))
+
+
+def _filename_evidence(file_name: str) -> tuple[set[str], tuple[int | float, ...]]:
+    """Keep business identifiers and area hints separate from cadastral fields."""
+    normalized = re.sub(r"[_\-]", " ", file_name.upper())
+    identifiers = {
+        f"{prefix}{number}"
+        for prefix, number in re.findall(r"\b(VA|PR|TO)\s*(\d{1,6}[A-Z]?)\b", normalized)
+    }
+    areas: list[int | float] = []
+    for raw, unit in re.findall(r"\b(\d+(?:[.,]\d+)?)\s*(M2|M²|HA)\b", normalized):
+        try:
+            number = float(raw.replace(",", "."))
+        except ValueError:
+            continue
+        if unit == "HA":
+            number *= 10_000
+        if 0 < number <= 100_000_000:
+            areas.append(int(number) if number.is_integer() else number)
+    return identifiers, tuple(areas)
 
 
 def _property_tokens(value: str) -> set[str]:

@@ -8,10 +8,12 @@ import unicodedata
 from typing import Any
 
 from .property_pipeline import (
+    MAX_AREA_M2,
     PROPERTY_SCHEMA,
     PropertyExtraction,
     is_valid_matrix_article,
     is_valid_matrix_section,
+    normalize_matrix_article,
 )
 
 
@@ -33,6 +35,13 @@ class CadernetaValues:
     matrix_section: str = ""
     area_m2: int | float | None = None
     owner_name: str = ""
+    matrix_article_raw: str = ""
+    matrix_article_normalization: str = ""
+    area_raw: str = ""
+    area_unit: str = ""
+    owner_tax_id: str = ""
+    holder_capacity: str = ""
+    ownership_type: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -41,18 +50,33 @@ class CadernetaValues:
             "matrix_section": self.matrix_section or None,
             "area_m2": self.area_m2,
             "owner_name": self.owner_name or None,
+            "matrix_article_raw": self.matrix_article_raw or None,
+            "matrix_article_normalization": self.matrix_article_normalization or None,
+            "area_raw": self.area_raw or None,
+            "area_unit": self.area_unit or None,
+            "owner_tax_id": self.owner_tax_id or None,
+            "holder_capacity": self.holder_capacity or None,
+            "ownership_type": self.ownership_type or None,
         }
 
     def validated(self) -> "CadernetaValues":
         property_name = self.property_name if len(self.property_name) > 2 else ""
-        article = self.matrix_article.upper().replace(" ", "")
+        article_result = normalize_matrix_article(self.matrix_article_raw or self.matrix_article)
+        article = article_result.canonical
         section = self.matrix_section.upper().replace(" ", "")
         return CadernetaValues(
             property_name=property_name,
             matrix_article=article if _valid_article(article) else "",
             matrix_section=section if _valid_section(section) else "",
-            area_m2=self.area_m2 if self.area_m2 and self.area_m2 > 0 else None,
+            area_m2=self.area_m2 if self.area_m2 and 0 < self.area_m2 <= MAX_AREA_M2 else None,
             owner_name=_clean_owner_name(self.owner_name),
+            matrix_article_raw=article_result.raw,
+            matrix_article_normalization=article_result.reason,
+            area_raw=self.area_raw,
+            area_unit=self.area_unit,
+            owner_tax_id=re.sub(r"\D", "", self.owner_tax_id) if re.fullmatch(r"\s*\d{9}\s*", self.owner_tax_id) else "",
+            holder_capacity=self.holder_capacity.strip()[:100],
+            ownership_type=self.ownership_type.strip()[:100],
         )
 
 
@@ -156,12 +180,22 @@ def _contiguous_group_starts(indexes: list[int]) -> list[int]:
 
 def parse_caderneta(pages: list[AnnexPage]) -> CadernetaValues:
     text = "\n".join(page.text for page in pages)
+    article_raw, article, article_reason = _caderneta_article_with_evidence(text)
+    area_m2, area_raw, area_unit = _caderneta_area_with_evidence(text)
+    owner_name, _, owner_tax_id, holder_capacity, ownership_type = _caderneta_holder(text)
     return CadernetaValues(
         property_name=_caderneta_property_name(text),
-        matrix_article=_caderneta_article(text),
+        matrix_article=article,
         matrix_section=_caderneta_section(text),
-        area_m2=_caderneta_area(text),
-        owner_name=_caderneta_owner(text),
+        area_m2=area_m2,
+        owner_name=owner_name,
+        matrix_article_raw=article_raw,
+        matrix_article_normalization=article_reason,
+        area_raw=area_raw,
+        area_unit=area_unit,
+        owner_tax_id=owner_tax_id,
+        holder_capacity=holder_capacity,
+        ownership_type=ownership_type,
     ).validated()
 
 
@@ -170,7 +204,7 @@ def assess_cadastral_evidence(pages: list[AnnexPage]) -> CadastralEvidence:
     values = parse_caderneta(pages)
     text = "\n".join(page.text for page in pages)
     normalized = _fold(text)
-    has_title = bool(re.search(r"\bcaderneta\s+predial\s+(?:rustica|urbana)\b", normalized, re.I))
+    has_title = _has_cadastral_title(normalized)
     has_property_header = bool(re.search(r"\bidentificacao\s+do\s+predio\b", normalized, re.I))
     has_holders = bool(re.search(r"\btitulares?\b", normalized, re.I))
     has_identity = bool(values.matrix_article and values.matrix_section)
@@ -215,28 +249,36 @@ def reconcile_property(
 ) -> PropertyExtraction:
     """Consolidate contract context and caderneta evidence without guessing."""
     contract_values = _values_from_result(contract)
-    caderneta_values = caderneta.as_dict()
+    caderneta_values = {field: caderneta.as_dict()[field] for field in PROPERTY_SCHEMA}
     prior_validation = list(contract.audit.get("validation_results", []))
     validation: list[str] = []
     recovered_fields: list[str] = []
     evidence: dict[str, dict[str, Any]] = {}
-    final = dict(contract_values)
-    agreements = 0
+    cadastral = cadastral_evidence or (assess_cadastral_evidence(pages) if pages else CadastralEvidence(
+        values=caderneta,
+        page_numbers=(),
+        matrix_key=matrix_key(caderneta.matrix_article, caderneta.matrix_section),
+        structure_status="external_caderneta_unverified",
+        owner_status="owner_blocked_unverified_caderneta",
+    ))
+    use_cadastral_identity = cadastral.is_structurally_valid and bool(cadastral.matrix_key)
+    final = dict(caderneta_values) if use_cadastral_identity else dict(contract_values)
 
     for field in PROPERTY_SCHEMA:
         contract_value = contract_values[field]
         caderneta_value = caderneta_values[field]
-        if contract_value not in ("", None) and caderneta_value not in ("", None):
+        if use_cadastral_identity and contract_value not in ("", None) and caderneta_value not in ("", None):
             if _same_value(contract_value, caderneta_value):
-                agreements += 1
                 evidence[field] = {
                     "value": caderneta_value,
                     "source": "contract_and_caderneta",
                     "confidence": 99,
                 }
                 final[field] = caderneta_value
-            elif field in {"property_name", "area_m2"}:
-                # Caderneta values are structured and authoritative for these fields.
+            else:
+                # A selected caderneta is one atomic property record.  Every
+                # final field comes from that record, never from a hybrid of
+                # contract article/section and cadastral name/area.
                 final[field] = caderneta_value
                 evidence[field] = {
                     "value": caderneta_value,
@@ -245,15 +287,7 @@ def reconcile_property(
                 }
                 recovered_fields.append(field)
                 validation.append(f"{field}_contract_caderneta_mismatch")
-            else:
-                # Preserve the contract value, but do not claim reconciliation.
-                evidence[field] = {
-                    "value": contract_value,
-                    "source": "contract_clause",
-                    "confidence": 60,
-                }
-                validation.append(f"{field}_contract_caderneta_mismatch")
-        elif caderneta_value not in ("", None):
+        elif use_cadastral_identity and caderneta_value not in ("", None):
             final[field] = caderneta_value
             recovered_fields.append(field)
             evidence[field] = {
@@ -261,6 +295,14 @@ def reconcile_property(
                 "source": "caderneta_predial",
                 "confidence": 99,
             }
+        elif use_cadastral_identity and contract_value not in ("", None):
+            final[field] = "" if field != "area_m2" else None
+            evidence[field] = {
+                "value": None,
+                "source": "caderneta_predial",
+                "confidence": 0,
+            }
+            validation.append(f"{field}_missing_from_selected_caderneta")
         elif contract_value not in ("", None):
             evidence[field] = {
                 "value": contract_value,
@@ -270,13 +312,6 @@ def reconcile_property(
         else:
             evidence[field] = {"value": None, "source": None, "confidence": 0}
 
-    cadastral = cadastral_evidence or (assess_cadastral_evidence(pages) if pages else CadastralEvidence(
-        values=caderneta,
-        page_numbers=(),
-        matrix_key=matrix_key(caderneta.matrix_article, caderneta.matrix_section),
-        structure_status="external_caderneta_unverified",
-        owner_status="owner_blocked_unverified_caderneta",
-    ))
     owner_name = caderneta.owner_name if cadastral.owner_is_verified else ""
     if owner_name:
         evidence["owner_name"] = {
@@ -289,11 +324,12 @@ def reconcile_property(
         evidence["owner_name"] = {"value": None, "source": None, "confidence": 0}
 
     confidence_before = contract.confidence
-    confidence_after = (
-        _confidence_v3(final, has_agreement=agreements > 0)
-        if recovered_fields or agreements
-        else contract.confidence
+    scores = _confidence_scores_v3(
+        final,
+        extraction=0.99 if use_cadastral_identity else max(contract.extraction_confidence, contract.confidence / 100),
+        consistency=1.0 if use_cadastral_identity and not validation else (0.6 if validation else contract.consistency_score),
     )
+    confidence_after = round(scores["final_confidence"] * 100)
     audit = dict(contract.audit)
     audit.update({
         "contract_values": contract_values,
@@ -306,6 +342,10 @@ def reconcile_property(
         "confidence_before_recovery": confidence_before,
         "confidence_after_recovery": confidence_after,
         "cadastral_evidence": cadastral.to_dict(),
+        "identity_selection": {
+            "source": "caderneta_predial" if use_cadastral_identity else "contract_clause",
+            "atomic": True,
+        },
     })
     return replace(
         contract,
@@ -320,6 +360,11 @@ def reconcile_property(
         area_m2=final["area_m2"],
         owner_name=owner_name,
         confidence=confidence_after,
+        extraction_confidence=scores["extraction_confidence"],
+        identity_confidence=scores["identity_confidence"],
+        completeness_score=scores["completeness_score"],
+        consistency_score=scores["consistency_score"],
+        final_confidence=scores["final_confidence"],
         candidate_score=max(contract.candidate_score, max((page.caderneta_score for page in pages), default=0)),
         evidence_model=evidence,
         audit=audit,
@@ -327,7 +372,12 @@ def reconcile_property(
 
 
 def recover_from_annexes(contract: PropertyExtraction, annex_text: str) -> PropertyExtraction:
-    pages = discover_caderneta_pages(annex_text)
+    groups = discover_caderneta_groups(annex_text)
+    assessed = [(pages, assess_cadastral_evidence(pages)) for pages in groups]
+    verified = [(pages, evidence) for pages, evidence in assessed if evidence.is_structurally_valid]
+    if len(verified) > 1:
+        return _recover_multiple_properties(contract, verified)
+    pages = verified[0][0] if verified else []
     if not pages:
         audit = dict(contract.audit)
         prior_validation = list(audit.get("validation_results", []))
@@ -342,6 +392,61 @@ def recover_from_annexes(contract: PropertyExtraction, annex_text: str) -> Prope
         })
         return replace(contract, confidence=audit["confidence_after_recovery"], audit=audit)
     return reconcile_property(contract, parse_caderneta(pages), pages)
+
+
+def _recover_multiple_properties(contract: PropertyExtraction, verified) -> PropertyExtraction:
+    properties: list[dict[str, Any]] = []
+    completeness: list[float] = []
+    identity: list[float] = []
+    owners: list[str] = []
+    for _, evidence in verified:
+        values = evidence.values
+        item = values.as_dict()
+        item.update({
+            "property_matrix_key": evidence.matrix_key,
+            "pages": list(evidence.page_numbers),
+            "structure_status": evidence.structure_status,
+            "owner_status": evidence.owner_status,
+        })
+        properties.append(item)
+        fields = (values.property_name, values.matrix_article, values.matrix_section, values.area_m2)
+        completeness.append(sum(value not in ("", None) for value in fields) / 4)
+        identity.append(
+            0.50 * bool(values.matrix_article)
+            + 0.35 * bool(values.matrix_section)
+            + 0.15 * bool(values.property_name)
+        )
+        if evidence.owner_is_verified and values.owner_name:
+            owners.append(values.owner_name)
+    completeness_score = min(completeness, default=0.0)
+    identity_score = min(identity, default=0.0)
+    final = min(0.99, completeness_score, identity_score, 1.0)
+    audit = dict(contract.audit)
+    audit.update({
+        "multi_property_status": "preserved",
+        "multi_property_count": len(properties),
+        "identity_selection": {"source": "caderneta_predial", "atomic": True, "multiple": True},
+        "cadastral_properties": properties,
+    })
+    return replace(
+        contract,
+        status="processed_multi_property",
+        reason="",
+        property_name="",
+        matrix_article="",
+        matrix_section="",
+        property_matrix_key="",
+        area_m2=None,
+        owner_name=owners[0] if owners and len(set(owners)) == 1 else "",
+        properties=tuple(properties),
+        confidence=round(final * 100),
+        extraction_confidence=0.99,
+        identity_confidence=round(identity_score, 4),
+        completeness_score=round(completeness_score, 4),
+        consistency_score=1.0,
+        final_confidence=round(final, 4),
+        audit=audit,
+    )
 
 
 def _split_pages(text: str) -> list[tuple[int, str]]:
@@ -360,8 +465,8 @@ def _split_pages(text: str) -> list[tuple[int, str]]:
 def _caderneta_score(text: str) -> int:
     normalized = _fold(text)
     indicators = (
-        (r"\bactualizacao\s+(?:de\s+)?caderneta\s+predial\s+rustica\b", 70),
-        (r"\bcaderneta\s+predial\s+rustica\b", 45),
+        (r"\bactualizacao\s+(?:de\s+)?caderneta\s+predial\s+rustica(?=\b|tributaria)", 70),
+        (r"\bcaderneta\s+predial\s+rustica(?=\b|tributaria)", 45),
         (r"\bmodelo\s*[-:]?\s*[AB]\b", 30),
         (r"\bcaderneta\s+predial\b", 30),
         (r"\bidentificacao\s+do\s+predio\b", 20),
@@ -375,11 +480,19 @@ def _caderneta_score(text: str) -> int:
 
 def _has_caderneta_title(text: str) -> bool:
     normalized = _fold(text)
+    return _has_cadastral_title(normalized) and bool(
+        re.search(r"\bmodelo\s*[-:]?\s*[AB]\b", normalized, re.IGNORECASE)
+    )
+
+
+def _has_cadastral_title(normalized: str) -> bool:
+    # Common OCR output glues the AT header directly after ``RÚSTICA``
+    # (``RÚSTICAtributária``).  Accept only that known continuation.
     return bool(re.search(
-        r"\b(?:actualizacao\s+(?:de\s+)?)?caderneta\s+predial\s+rustica\b",
+        r"\b(?:actualizacao\s+(?:de\s+)?)?caderneta\s+predial\s+(?:rustica|urbana)(?=\b|tributaria)",
         normalized,
         re.IGNORECASE,
-    )) and bool(re.search(r"\bmodelo\s*[-:]?\s*[AB]\b", normalized, re.IGNORECASE))
+    ))
 
 
 def _label_value(text: str, label: str, stop: str) -> str:
@@ -398,13 +511,23 @@ def _label_value(text: str, label: str, stop: str) -> str:
 
 
 def _caderneta_article(text: str) -> str:
+    return _caderneta_article_with_evidence(text)[1]
+
+
+def _caderneta_article_with_evidence(text: str) -> tuple[str, str, str]:
+    """Layered, label-anchored extraction without accepting words as articles."""
     normalized = _fold(text)
-    match = re.search(
-        r"\bartigo\s+matricial(?:\s+n[Oº.]*)?\s*[:#-]?\s*(\d{1,8}(?:-[A-Z]{1,3})?)\b",
-        normalized,
-        re.IGNORECASE,
+    patterns = (
+        r"\bartigo\s+matricial(?:\s+n[Oº.]*)?\s*[:#|\-]?\s*(\d{1,10}\s*ARV|\d{1,10})\b",
+        r"\bmatriz\s+predial(?:\s+rustica|\s+urbana)?\s*(?:artigo)?\s*[:#|\-]?\s*(\d{1,10}\s*ARV|\d{1,10})\b",
+        r"\bartigo\b.{0,24}?\b(\d{1,10}\s*ARV|\d{1,10})\b",
     )
-    return match.group(1) if match else ""
+    for pattern in patterns:
+        match = re.search(pattern, normalized, re.IGNORECASE | re.DOTALL)
+        if match:
+            result = normalize_matrix_article(match.group(1))
+            return result.raw, result.canonical, result.reason
+    return "", "", "not_found"
 
 
 def _caderneta_property_name(text: str) -> str:
@@ -429,27 +552,64 @@ def _caderneta_property_name(text: str) -> str:
 
 def _caderneta_section(text: str) -> str:
     normalized = _fold(text)
-    match = re.search(r"\bseccao\s*[:#-]?\s*([A-Z]{1,3})\b", normalized, re.IGNORECASE)
+    match = re.search(r"\bseccao\s*[:#-]?\s*([A-Z])\b", normalized, re.IGNORECASE)
     return match.group(1).upper() if match else ""
 
 
 def _caderneta_area(text: str) -> int | float | None:
+    return _caderneta_area_with_evidence(text)[0]
+
+
+def _caderneta_area_with_evidence(text: str) -> tuple[int | float | None, str, str]:
     normalized = _fold(text)
-    hectare = re.search(r"area\s+total\s*\(\s*ha\s*\)\s*[:\-]?\s*([\d.,]+)", normalized, re.IGNORECASE)
+    hectare = re.search(
+        r"area\s+total(?:\s*\(\s*ha\s*\)\s*[:\-]?\s*([\d.,\s]+)|\s*[:\-]?\s*([\d.,\s]+)\s*ha\b)",
+        normalized,
+        re.IGNORECASE,
+    )
     if hectare:
-        number = _decimal_number(hectare.group(1))
+        raw = hectare.group(1) or hectare.group(2)
+        number = _decimal_number(raw)
         if number is not None:
-            converted = number * 10_000
-            return int(converted) if converted.is_integer() else converted
-    square_meters = re.search(r"area(?:\s+total)?\s*(?:m2|m²)\s*[:\-]?\s*([\d.,]+)", normalized, re.IGNORECASE)
+            converted = round(number * 10_000, 6)
+            if 0 < converted <= MAX_AREA_M2:
+                return (int(converted) if converted.is_integer() else converted), raw, "ha"
+    square_meters = re.search(
+        r"area(?:\s+total)?(?:\s*\(\s*(?:m2|m²)\s*\)\s*[:\-]?\s*([\d.,\s]+)|"
+        r"\s*[:\-]?\s*([\d.,\s]+)\s*(?:m2|m²)\b)",
+        normalized,
+        re.IGNORECASE,
+    )
     if square_meters:
-        return _decimal_number(square_meters.group(1))
-    return None
+        raw = square_meters.group(1) or square_meters.group(2)
+        number = _decimal_number(raw)
+        if number is not None and 0 < number <= MAX_AREA_M2:
+            return number, raw, "m2"
+    return None, "", ""
 
 
 def _caderneta_owner(text: str) -> str:
     value, _ = _caderneta_owner_with_status(text)
     return value
+
+
+def _caderneta_holder(text: str) -> tuple[str, str, str, str, str]:
+    """Return holder identity separately from capacity and ownership wording."""
+    owner_name, status = _caderneta_owner_with_status(text)
+    tax_match = re.search(r"\bidentifica[cç][aã]o\s+fiscal\s*[:#-]?\s*(\d{9})\b", text, re.I)
+    capacity_match = re.search(
+        r"\btipo\s+de\s+titular\s*[:#-]?\s*(.+?)(?=\b(?:parte|documento|entidade|morada)\b|$)",
+        text,
+        re.I | re.DOTALL,
+    )
+    ownership_match = re.search(
+        r"\b(propriedade\s+plena|usufruto|nua\s+propriedade|compropriedade)\b",
+        text,
+        re.I,
+    )
+    capacity = re.sub(r"\s+", " ", capacity_match.group(1)).strip(" .,:;-\n")[:100] if capacity_match else ""
+    ownership = ownership_match.group(1).strip()[:100] if ownership_match else ""
+    return owner_name, status, tax_match.group(1) if tax_match else "", capacity, ownership
 
 
 def _caderneta_owner_with_status(text: str) -> tuple[str, str]:
@@ -513,17 +673,29 @@ def _clean_owner_name(value: str) -> str:
         "SENHORIO", "SENHORIOS",
     }:
         return ""
+    if normalized in {"PROPRIEDADE PLENA", "USUFRUTO", "NUA PROPRIEDADE", "COMPROPRIEDADE"}:
+        return ""
     if re.search(r"\b(?:morada|tipo\s+de\s+titular|parte|documento|entidade)\b", normalized, re.IGNORECASE):
         return ""
     return value[:160]
 
 
 def _decimal_number(value: str) -> float | None:
-    raw = value.replace(" ", "")
-    if not re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
+    raw = re.sub(r"\s+", "", value)
+    if not re.fullmatch(r"\d+(?:[.,]\d+)*", raw):
         return None
+    if "," in raw and "." in raw:
+        decimal = "," if raw.rfind(",") > raw.rfind(".") else "."
+        thousands = "." if decimal == "," else ","
+        raw = raw.replace(thousands, "").replace(decimal, ".")
+    elif "," in raw:
+        left, right = raw.rsplit(",", 1)
+        raw = left + right if len(right) == 3 else left + "." + right
+    elif "." in raw:
+        left, right = raw.rsplit(".", 1)
+        raw = left + right if len(right) == 3 else left + "." + right
     try:
-        return float(raw.replace(",", "."))
+        return float(raw)
     except ValueError:
         return None
 
@@ -537,10 +709,25 @@ def _values_from_result(result: PropertyExtraction) -> dict[str, Any]:
     }
 
 
-def _confidence_v3(values: dict[str, Any], *, has_agreement: bool) -> int:
-    weights = {"property_name": 30, "matrix_article": 30, "matrix_section": 20, "area_m2": 20}
-    score = sum(weight for field, weight in weights.items() if values[field] not in ("", None))
-    return min(100, score + (10 if has_agreement else 0))
+def _confidence_scores_v3(
+    values: dict[str, Any], *, extraction: float, consistency: float
+) -> dict[str, float]:
+    completeness = sum(values[field] not in ("", None) for field in PROPERTY_SCHEMA) / len(PROPERTY_SCHEMA)
+    identity = (
+        0.50 * bool(values.get("matrix_article"))
+        + 0.35 * bool(values.get("matrix_section"))
+        + 0.15 * bool(values.get("property_name"))
+    )
+    extraction = min(1.0, max(0.0, extraction))
+    consistency = min(1.0, max(0.0, consistency))
+    final = min(extraction, identity, completeness, consistency)
+    return {
+        "extraction_confidence": round(extraction, 4),
+        "identity_confidence": round(identity, 4),
+        "completeness_score": round(completeness, 4),
+        "consistency_score": round(consistency, 4),
+        "final_confidence": round(final, 4),
+    }
 
 
 def _same_value(first: Any, second: Any) -> bool:

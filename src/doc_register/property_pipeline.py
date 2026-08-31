@@ -14,10 +14,7 @@ from typing import Any, Callable, Mapping
 
 
 LEASE_THRESHOLD = 60
-INVALID_MATRIX_ARTICLES = frozenset({
-    "DA", "DO", "DOS", "DAS", "ES", "AO", "AOS", "TE", "YO", "DIS",
-    "PES", "GG", "SOB",
-})
+MAX_AREA_M2 = 100_000_000
 PROPERTY_SCHEMA = (
     "property_name",
     "matrix_article",
@@ -48,6 +45,12 @@ class PropertyExtraction:
     area_m2: int | float | None = None
     owner_name: str = ""
     confidence: int = 0
+    extraction_confidence: float = 0.0
+    identity_confidence: float = 0.0
+    completeness_score: float = 0.0
+    consistency_score: float = 0.0
+    final_confidence: float = 0.0
+    properties: tuple[Mapping[str, Any], ...] = ()
     source_section: str = ""
     source_clause: str = ""
     lease_score: int = 0
@@ -69,6 +72,12 @@ class PropertyExtraction:
             "area_m2": self.area_m2,
             "owner_name": self.owner_name or None,
             "confidence": self.confidence,
+            "extraction_confidence": self.extraction_confidence,
+            "identity_confidence": self.identity_confidence,
+            "completeness_score": self.completeness_score,
+            "consistency_score": self.consistency_score,
+            "final_confidence": self.final_confidence,
+            "properties": [dict(item) for item in self.properties],
             "source": {
                 "section": self.source_section or None,
                 "clause": self.source_clause or None,
@@ -118,18 +127,22 @@ class PropertyExtractionPipeline:
         raw_values = _extract_regex_values(candidate)
         values = _validate_values(raw_values)
         quality_penalty, validation_results = _quality_penalty(raw_values, values)
-        confidence = _confidence(values, quality_penalty)
+        scores = _confidence_scores(values, quality_penalty=quality_penalty)
+        confidence = round(scores["final_confidence"] * 100)
         used_llm = False
         llm_error = ""
 
-        if allow_llm and (confidence < 90 or _has_missing_values(values)) and self._llm_extractor:
+        if allow_llm and (
+            scores["extraction_confidence"] < 0.90 or _has_missing_values(values)
+        ) and self._llm_extractor:
             used_llm = True
             try:
                 recovered = _normalise_llm_values(self._llm_extractor(candidate))
                 values = _merge_with_verified_llm_values(values, recovered, candidate)
                 values = _validate_values(values)
                 quality_penalty, validation_results = _quality_penalty(raw_values, values)
-                confidence = _confidence(values, quality_penalty)
+                scores = _confidence_scores(values, quality_penalty=quality_penalty)
+                confidence = round(scores["final_confidence"] * 100)
             except Exception as exc:  # The deterministic result remains useful.
                 llm_error = str(exc)[:500]
 
@@ -142,6 +155,11 @@ class PropertyExtractionPipeline:
             property_matrix_key=_matrix_key(values["matrix_article"], values["matrix_section"]),
             area_m2=values["area_m2"],
             confidence=confidence,
+            extraction_confidence=scores["extraction_confidence"],
+            identity_confidence=scores["identity_confidence"],
+            completeness_score=scores["completeness_score"],
+            consistency_score=scores["consistency_score"],
+            final_confidence=scores["final_confidence"],
             source_section="Considerando que" if has_considering else "",
             source_clause="a)" if has_clause_a else "",
             lease_score=detection.score,
@@ -218,18 +236,26 @@ def _candidate_blocks(text: str) -> list[str]:
 
 
 def _extract_regex_values(text: str) -> dict[str, Any]:
+    article = _first_match(
+        r"\bartigo(?:\s+matricial)?\s*(?:n[.ºo°]*\s*)?[:#-]?\s*"
+        r"(\d{1,10}\s*ARV|[A-Z0-9]+(?:\s*[-/]\s*[A-Z0-9]+)*)\b",
+        text,
+    )
+    area, area_raw, area_unit = _first_area_with_evidence(text)
     return {
         "property_name": _first_property_name(text),
-        "matrix_article": _first_match(
-            r"\bartigo(?:\s+matricial)?\s*(?:n[.ºo°]*\s*)?[:#-]?\s*"
-            r"([A-Z0-9]+(?:\s*[-/]\s*[A-Z0-9]+)*)\b",
-            text,
-        ),
+        "matrix_article": article,
+        "matrix_article_raw": article,
+        "matrix_article_normalization": normalize_matrix_article(article).reason,
+        "article_label_seen": bool(re.search(r"\bartigo(?:\s+matricial)?\b", text, re.I)),
         "matrix_section": _first_match(
-            r"\bsec[cç][aã]o(?:\s+matricial)?\s*(?:n[.ºo°]*\s*)?[:#-]?\s*([A-Z]{1,3})\b",
+            r"\bsec[cç][aã]o(?:\s+matricial)?\s*(?:n[.ºo°]*\s*)?[:#-]?\s*([A-Z]+)\b",
             text,
         ),
-        "area_m2": _first_area(text),
+        "section_label_seen": bool(re.search(r"\bsec[cç][aã]o(?:\s+matricial)?\b", text, re.I)),
+        "area_m2": area,
+        "area_raw": area_raw,
+        "area_unit": area_unit,
     }
 
 
@@ -247,12 +273,24 @@ def _first_property_name(text: str) -> str:
 
 
 def _first_area(text: str) -> int | float | None:
+    return _first_area_with_evidence(text)[0]
+
+
+def _first_area_with_evidence(text: str) -> tuple[int | float | None, str, str]:
     match = re.search(
-        r"\b[áa]rea(?:\s+total)?\s*(?:de|:)?\s*([\d\s.,]+)\s*(?:m[²2])\b",
+        r"\b[áa]rea(?:\s+total)?\s*(?:de|:)?\s*([\d\s.,]+)\s*(m[²2]|ha)\b",
         text,
         re.IGNORECASE,
     )
-    return _normalise_area(match.group(1)) if match else None
+    if not match:
+        return None, "", ""
+    raw, unit = match.group(1).strip(), match.group(2).lower()
+    number = _normalise_area(raw)
+    if number is not None and unit == "ha":
+        number = number * 10_000
+    if number is None or number <= 0 or number > MAX_AREA_M2:
+        return None, raw, unit
+    return (int(number) if float(number).is_integer() else number), raw, unit
 
 
 def _first_match(pattern: str, text: str) -> str:
@@ -299,23 +337,35 @@ def _validate_values(values: dict[str, Any]) -> dict[str, Any]:
     validated = dict(values)
     name = _clean_property_name(str(validated["property_name"] or ""))
     validated["property_name"] = name if is_valid_property_name(name) else ""
-    article = re.sub(r"\s*([- /])\s*", r"\1", str(validated["matrix_article"] or "").upper())
-    validated["matrix_article"] = article if is_valid_matrix_article(article) else ""
+    article = normalize_matrix_article(str(validated["matrix_article"] or ""))
+    validated["matrix_article"] = article.canonical
     section = str(validated["matrix_section"] or "").upper()
     validated["matrix_section"] = section if is_valid_matrix_section(section) else ""
     area = _normalise_area(validated["area_m2"])
-    validated["area_m2"] = area if area is not None and area > 0 else None
+    validated["area_m2"] = area if area is not None and 0 < area <= MAX_AREA_M2 else None
     return validated
 
 
-def _confidence(values: Mapping[str, Any], penalty: int = 0) -> int:
-    weights = {
-        "property_name": 30,
-        "matrix_article": 30,
-        "matrix_section": 20,
-        "area_m2": 20,
+def _confidence_scores(
+    values: Mapping[str, Any], *, quality_penalty: int = 0, consistency: float = 0.85
+) -> dict[str, float]:
+    present = sum(values[field] not in ("", None) for field in PROPERTY_SCHEMA)
+    completeness = present / len(PROPERTY_SCHEMA)
+    identity_parts = (
+        0.50 * bool(values.get("matrix_article"))
+        + 0.35 * bool(values.get("matrix_section"))
+        + 0.15 * bool(values.get("property_name"))
+    )
+    extraction = max(0.0, completeness - quality_penalty / 100)
+    consistency = min(1.0, max(0.0, consistency))
+    final = min(extraction, identity_parts, completeness, consistency)
+    return {
+        "extraction_confidence": round(extraction, 4),
+        "identity_confidence": round(identity_parts, 4),
+        "completeness_score": round(completeness, 4),
+        "consistency_score": round(consistency, 4),
+        "final_confidence": round(final, 4),
     }
-    return max(0, sum(weight for field, weight in weights.items() if values[field] not in ("", None)) - penalty)
 
 
 def _has_missing_values(values: Mapping[str, Any]) -> bool:
@@ -339,11 +389,30 @@ def _clean_property_name(value: str) -> str:
 
 
 def is_valid_matrix_article(value: str) -> bool:
-    normalized = value.strip().upper()
-    if not normalized or normalized in INVALID_MATRIX_ARTICLES:
-        return False
-    # Matrix articles are numeric identifiers, optionally with a suffix.
-    return bool(re.fullmatch(r"\d{1,10}(?:[A-Z]{1,3}|[-/][A-Z0-9]{1,10})?", normalized))
+    return bool(re.fullmatch(r"\d{1,10}", value.strip()))
+
+
+@dataclass(frozen=True)
+class MatrixArticleNormalization:
+    raw: str
+    canonical: str
+    reason: str
+
+
+def normalize_matrix_article(value: Any) -> MatrixArticleNormalization:
+    """Canonicalise only deterministic Portuguese matrix article variants.
+
+    ``ARV`` is a trusted administrative suffix.  Other letters (DA, SOB,
+    OCR fragments or filename business identifiers) are not cadastral
+    articles and must never be silently promoted to the final identity.
+    """
+    raw = re.sub(r"\s+", "", str(value or "")).upper()
+    if re.fullmatch(r"\d{1,10}", raw):
+        return MatrixArticleNormalization(raw=raw, canonical=raw, reason="exact_numeric")
+    match = re.fullmatch(r"(\d{1,10})ARV", raw)
+    if match:
+        return MatrixArticleNormalization(raw=raw, canonical=match.group(1), reason="trusted_arv_removed")
+    return MatrixArticleNormalization(raw=raw, canonical="", reason="rejected_non_numeric")
 
 
 def is_valid_matrix_section(value: str) -> bool:
@@ -379,13 +448,19 @@ def _quality_penalty(raw_values: Mapping[str, Any], values: Mapping[str, Any]) -
     raw_section = str(raw_values.get("matrix_section") or "")
     if raw_article and not values["matrix_article"]:
         penalty += 30
-        results.append("invalid_matrix_article")
+        results.append("matrix_article_not_found")
+    elif raw_values.get("article_label_seen") and not values["matrix_article"]:
+        penalty += 30
+        results.append("matrix_article_not_found")
     if raw_name and not values["property_name"]:
         penalty += 30
         results.append("invalid_property_name")
     if raw_section and not values["matrix_section"]:
         penalty += 10
         results.append("invalid_matrix_section")
+    elif raw_values.get("section_label_seen") and not values["matrix_section"]:
+        penalty += 10
+        results.append("matrix_section_not_found")
     return penalty, results
 
 
@@ -393,7 +468,7 @@ def _normalise_area(value: Any) -> int | float | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return value if value > 0 else None
+        return value if 0 < value <= MAX_AREA_M2 else None
     raw = re.sub(r"[\s\u00a0]", "", str(value))
     if not raw or not re.fullmatch(r"\d+(?:[.,]\d+)*", raw):
         return None
@@ -413,13 +488,14 @@ def _normalise_area(value: Any) -> int | float | None:
         number = float(normalized)
     except ValueError:
         return None
-    if number <= 0:
+    if number <= 0 or number > MAX_AREA_M2:
         return None
     return int(number) if number.is_integer() else number
 
 
 def _serialise_values(values: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: values.get(key) for key in PROPERTY_SCHEMA}
+    keys = (*PROPERTY_SCHEMA, "matrix_article_raw", "matrix_article_normalization", "area_raw", "area_unit")
+    return {key: values.get(key) for key in keys}
 
 
 def _contract_evidence(values: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -441,6 +517,7 @@ __all__ = [
     "is_valid_matrix_article",
     "is_valid_matrix_section",
     "is_valid_property_name",
+    "normalize_matrix_article",
     "score_property_block",
     "select_clause_a",
     "select_considering_context",

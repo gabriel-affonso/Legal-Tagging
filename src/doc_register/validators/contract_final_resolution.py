@@ -500,9 +500,9 @@ def _detect_cadastral_conflicts(report: ContractResolutionReport) -> None:
     }
     if len(internal_groups) > 1:
         report.conflicts.append({
-            "type": "multiple_internal_cadernetas_unresolved",
+            "type": "multiple_internal_cadernetas_preserved",
             "caderneta_count": len(internal_groups),
-            "requires_review": True,
+            "requires_review": False,
         })
         _block_internal_caderneta_candidates(report)
         return
@@ -567,7 +567,7 @@ def _block_internal_caderneta_candidates(report: ContractResolutionReport) -> No
         report.candidates[index] = FactCandidate(**{
             **asdict(candidate),
             "validation_status": "blocked",
-            "rejection_reason": "multiple_internal_cadernetas_unresolved",
+            "rejection_reason": "multiple_internal_cadernetas_preserved_in_structured_output",
         })
 
 
@@ -636,7 +636,7 @@ def _valid(field_name: str, value: str, role: str) -> tuple[bool, str]:
         return False, "invalid_tax_id"
     if field_name == "property_article" and not re.fullmatch(r"\d{1,8}", value):
         return False, "invalid_cadastral_article"
-    if field_name == "property_section" and not re.fullmatch(r"[A-Z]{1,3}", value):
+    if field_name == "property_section" and not re.fullmatch(r"[A-Z]", value):
         return False, "invalid_cadastral_section"
     return True, ""
 
@@ -746,7 +746,7 @@ def _attach(result: ExtractionResult, report: ContractResolutionReport) -> None:
         if zone.internal_document.startswith("caderneta_predial_rustica_")
     ]
     result.cadastral_evidence_status = (
-        "multiple_internal_cadernetas_unresolved"
+        "multiple_internal_cadernetas_preserved"
         if len(internal_zones) > 1
         else "internal_caderneta_selected"
         if internal_zones

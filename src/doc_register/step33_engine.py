@@ -74,7 +74,7 @@ class Step33Report:
             for field in TRACKED_FIELDS
         }
         return {
-            "version": "3.3",
+            "version": "3.3.2",
             "active": self.active,
             "document_structure": self.structure.to_dict(),
             "party_extraction": self.parties.to_dict(),
@@ -83,6 +83,7 @@ class Step33Report:
             "blocked": self.blocked,
             "ownership_issues": self.ownership_issues,
             "cadastral_properties": self.cadastral_properties,
+            "confidence_dimensions": _cadastral_confidence_dimensions(self.cadastral_properties),
         }
 
 
@@ -107,7 +108,7 @@ def prepare_field_centric_extraction(document_text: str) -> Step33Report:
             report.blocked.append({
                 "field": field,
                 "value": "",
-                "reason": "multiple_properties_require_structured_output",
+                "reason": "multiple_properties_preserved_in_structured_output",
             })
     for candidate in extract_property_candidates(structure, document_text):
         _add(report, candidate)
@@ -259,6 +260,43 @@ def _has_multi_property_ambiguity(report: Step33Report) -> bool:
         return False
     matched = sum(bool(item.get("matched_contract_identity")) for item in report.cadastral_properties)
     return matched != 1
+
+
+def _cadastral_confidence_dimensions(properties: list[dict[str, object]]) -> dict[str, float]:
+    if not properties:
+        return {
+            "extraction_confidence": 0.0,
+            "identity_confidence": 0.0,
+            "completeness_score": 0.0,
+            "consistency_score": 0.0,
+            "final_confidence": 0.0,
+        }
+    completeness: list[float] = []
+    identity: list[float] = []
+    keys: list[str] = []
+    for item in properties:
+        completeness.append(sum(bool(item.get(field)) for field in (
+            "property_name", "property_article", "property_section", "property_total_area", "owner_name",
+        )) / 5)
+        identity.append(
+            0.50 * bool(item.get("property_article"))
+            + 0.35 * bool(item.get("property_section"))
+            + 0.15 * bool(item.get("property_name"))
+        )
+        if item.get("matrix_key"):
+            keys.append(str(item["matrix_key"]))
+    extraction_score = 0.99
+    identity_score = min(identity, default=0.0)
+    completeness_score = min(completeness, default=0.0)
+    consistency_score = 1.0 if len(keys) == len(properties) and len(keys) == len(set(keys)) else 0.6
+    final = min(extraction_score, identity_score, completeness_score, consistency_score)
+    return {
+        "extraction_confidence": extraction_score,
+        "identity_confidence": round(identity_score, 4),
+        "completeness_score": round(completeness_score, 4),
+        "consistency_score": consistency_score,
+        "final_confidence": round(final, 4),
+    }
 
 
 def _long_date(match: re.Match[str]) -> str:

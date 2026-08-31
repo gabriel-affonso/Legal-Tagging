@@ -9,6 +9,7 @@ from doc_register.models import ExtractionResult, PdfCandidate
 from doc_register.property_pipeline import (
     PropertyExtractionPipeline,
     detect_lease_contract,
+    normalize_matrix_article,
     select_clause_a,
     select_considering_context,
 )
@@ -45,7 +46,7 @@ def load_tests(
         test_context_and_clause_selectors_apply_the_expected_boundaries,
         test_property_catalogue_uses_cached_ocr_for_caderneta,
         test_sp_sequence_chain_matches_unique_crp_and_caderneta,
-        test_sp_sequence_chain_uses_crp_filename_when_ocr_is_weak,
+        test_sp_sequence_chain_uses_explicit_crp_matrix_filename_when_ocr_is_weak,
         test_same_pdf_caderneta_is_reconciled_with_contract,
         test_title_and_model_b_identify_same_pdf_caderneta_near_document_end,
         test_model_a_caderneta_recovers_owner_from_later_page,
@@ -57,6 +58,10 @@ def load_tests(
         test_reconciles_contract_and_caderneta_with_evidence,
         test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook,
         test_cadastral_owner_requires_holder_table_and_rejects_tenant_role,
+        test_matrix_article_normalization_accepts_only_numeric_and_trusted_arv,
+        test_caderneta_area_magnitude_is_bounded,
+        test_caderneta_mismatch_selects_one_atomic_identity,
+        test_compound_external_property_pdf_preserves_every_caderneta,
     )
     return unittest.TestSuite(unittest.FunctionTestCase(function) for function in functions)
 
@@ -98,7 +103,8 @@ def test_extracts_property_fields_from_considering_clause_a_without_llm() -> Non
     assert result.matrix_article == "123"
     assert result.matrix_section == "K"
     assert result.area_m2 == 45230
-    assert result.confidence == 100
+    assert result.confidence == 85
+    assert result.final_confidence == 0.85
     assert result.source_section == "Considerando que"
     assert result.source_clause == "a)"
     assert result.used_llm is False
@@ -133,7 +139,7 @@ def test_llm_only_receives_selected_clause_and_cannot_override_regex() -> None:
     assert result.matrix_article == "123"
     assert result.matrix_section == "K"
     assert result.area_m2 is None
-    assert result.confidence == 80
+    assert result.confidence == 75
 
 
 def test_invalid_article_and_section_have_zero_confidence() -> None:
@@ -148,7 +154,7 @@ def test_invalid_article_and_section_have_zero_confidence() -> None:
     assert result.matrix_article == ""
     assert result.matrix_section == ""
     assert result.confidence == 0
-    assert "invalid_matrix_article" in result.audit["validation_results"]
+    assert "matrix_article_not_found" in result.audit["validation_results"]
     assert "invalid_matrix_section" in result.audit["validation_results"]
 
 
@@ -178,7 +184,7 @@ def test_annex_failure_preserves_invalid_field_audit_and_confidence() -> None:
     result = recover_from_annexes(contract, "")
 
     assert result.confidence == 0
-    assert "invalid_matrix_article" in result.audit["validation_results"]
+    assert "matrix_article_not_found" in result.audit["validation_results"]
     assert "invalid_matrix_section" in result.audit["validation_results"]
     assert "caderneta_not_found" in result.audit["validation_results"]
 
@@ -203,19 +209,19 @@ def test_property_pack_matches_separate_caderneta_by_identifier() -> None:
     """, allow_llm=False)
     caderneta = CadernetaValues(
         property_name="Quinta da Ribeira",
-        matrix_article="269F",
+        matrix_article="269",
         matrix_section="K",
         area_m2=14812,
     )
     discovery = PropertyPackDiscovery([])
     discovery._descriptors = (PropertyDocumentDescriptor(
         path=Path("CadernetaPredial.pdf"),
-        identifiers=frozenset({"269F"}),
+        identifiers=frozenset({"VA553"}),
         kind="caderneta_predial",
         caderneta_values=caderneta,
     ),)
 
-    match = discovery.find_for_contract(Path("VA553_269F_CA.pdf"), "", contract)
+    match = discovery.find_for_contract(Path("VA553_CA.pdf"), "", contract)
 
     assert match.status == "property_pack_matched"
     assert match.score >= 100
@@ -224,12 +230,12 @@ def test_property_pack_matches_separate_caderneta_by_identifier() -> None:
 
 
 def test_property_pack_rejects_ambiguous_candidates() -> None:
-    caderneta = CadernetaValues(matrix_article="269F").validated()
+    caderneta = CadernetaValues(matrix_article="269").validated()
     discovery = PropertyPackDiscovery([])
     discovery._descriptors = tuple(
         PropertyDocumentDescriptor(
             path=Path(f"Caderneta-{index}.pdf"),
-            identifiers=frozenset({"269F"}),
+            identifiers=frozenset({"VA553"}),
             kind="caderneta_predial",
             caderneta_values=caderneta,
         )
@@ -240,18 +246,18 @@ def test_property_pack_rejects_ambiguous_candidates() -> None:
         allow_llm=False,
     )
 
-    match = discovery.find_for_contract(Path("VA553_269F_CA.pdf"), "", contract)
+    match = discovery.find_for_contract(Path("VA553_CA.pdf"), "", contract)
 
     assert match.status == "property_pack_ambiguous"
 
 
 def test_property_catalogue_uses_cached_ocr_for_caderneta() -> None:
-    caderneta_path = Path("CadernetaPredial-040812-R-140-J_SP18490.pdf")
+    caderneta_path = Path("CadernetaPredial_VA553_SP18490.pdf")
     caderneta_text = """
     [Page 1] CADERNETA PREDIAL RÚSTICA
     IDENTIFICAÇÃO DO PRÉDIO
     NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
-    ARTIGO MATRICIAL Nº: 269F
+    ARTIGO MATRICIAL Nº: 269
     SECÇÃO: K
     ELEMENTOS DO PRÉDIO
     ÁREA TOTAL (HA): 1,481200
@@ -266,7 +272,7 @@ def test_property_catalogue_uses_cached_ocr_for_caderneta() -> None:
         allow_llm=False,
     )
 
-    match = discovery.find_for_contract(Path("VA553_269F_CA.pdf"), "", contract)
+    match = discovery.find_for_contract(Path("VA553_CA.pdf"), "", contract)
 
     assert match.status == "property_pack_matched"
     assert match.candidate_count == 1
@@ -275,20 +281,20 @@ def test_property_catalogue_uses_cached_ocr_for_caderneta() -> None:
 
 
 def test_sp_sequence_chain_matches_unique_crp_and_caderneta() -> None:
-    caderneta = CadernetaValues(matrix_article="140J", matrix_section="K").validated()
-    crp = CadernetaValues(matrix_article="140J", matrix_section="K").validated()
+    caderneta = CadernetaValues(matrix_article="140", matrix_section="K").validated()
+    crp = CadernetaValues(matrix_article="140", matrix_section="K").validated()
     discovery = PropertyPackDiscovery([])
     discovery._descriptors = (
         PropertyDocumentDescriptor(
             path=Path("CadernetaPredial_SP18490.pdf"),
-            identifiers=frozenset({"140J"}),
+            identifiers=frozenset({"140"}),
             kind="caderneta_predial",
             caderneta_values=caderneta,
             sharepoint_sequence=18490,
         ),
         PropertyDocumentDescriptor(
             path=Path("CRP_PR_140J_SP18491.pdf"),
-            identifiers=frozenset({"PR140J", "140J"}),
+            identifiers=frozenset({"PR140J", "140"}),
             kind="crp",
             crp_values=crp,
             sharepoint_sequence=18491,
@@ -306,14 +312,14 @@ def test_sp_sequence_chain_matches_unique_crp_and_caderneta() -> None:
     assert match.crp_source_path == Path("CRP_PR_140J_SP18491.pdf")
 
 
-def test_sp_sequence_chain_uses_crp_filename_when_ocr_is_weak() -> None:
+def test_sp_sequence_chain_uses_explicit_crp_matrix_filename_when_ocr_is_weak() -> None:
     caderneta_path = Path("CadernetaPredial-040812-R-140-J_SP18490.pdf")
-    crp_path = Path("CRP_PR_140J_SP18491.pdf")
+    crp_path = Path("CRP_MAT-140_SP18491.pdf")
     caderneta_text = """
     CADERNETA PREDIAL RÚSTICA
     IDENTIFICAÇÃO DO PRÉDIO
     NOME/LOCALIZAÇÃO PRÉDIO: Quinta da Ribeira
-    ARTIGO MATRICIAL Nº: 140-J
+    ARTIGO MATRICIAL Nº: 140
     SECÇÃO: K
     ELEMENTOS DO PRÉDIO
     ÁREA TOTAL (HA): 1,000000
@@ -335,7 +341,7 @@ def test_sp_sequence_chain_uses_crp_filename_when_ocr_is_weak() -> None:
 
     assert match.status == "property_pack_matched"
     assert match.methods[0] == "sp_sequence_chain"
-    assert match.caderneta_values.matrix_article == "140-J"
+    assert match.caderneta_values.matrix_article == "140"
 
 
 def test_same_pdf_caderneta_is_reconciled_with_contract() -> None:
@@ -487,9 +493,16 @@ def test_multiple_cadernetas_are_returned_as_separate_groups() -> None:
     """
 
     groups = discover_caderneta_groups(document)
+    contract = PropertyExtractionPipeline().extract(
+        "Contrato de arrendamento entre Senhorio e Arrendatário, com renda.",
+        allow_llm=False,
+    )
+    recovered = recover_from_annexes(contract, document)
 
     assert [[page.page_number for page in group] for group in groups] == [[4, 5], [12, 13]]
     assert [parse_caderneta(group).matrix_article for group in groups] == ["123", "456"]
+    assert recovered.status == "processed_multi_property"
+    assert [item["property_matrix_key"] for item in recovered.properties] == ["123-K", "456-M"]
 
 
 def test_discovers_and_parses_caderneta_in_document_tail() -> None:
@@ -538,7 +551,8 @@ def test_reconciles_contract_and_caderneta_with_evidence() -> None:
     result = recover_from_annexes(contract, annex)
 
     assert result.area_m2 == 14812
-    assert result.confidence == 100
+    assert result.confidence == 99
+    assert result.consistency_score == 1.0
     assert result.evidence_model["area_m2"]["source"] == "caderneta_predial"
     assert result.evidence_model["matrix_article"]["source"] == "contract_and_caderneta"
     assert result.audit["recovered_fields"] == ["area_m2"]
@@ -580,3 +594,98 @@ def test_property_output_uses_a_dedicated_worksheet_in_the_main_workbook() -> No
         assert sheet.cell(row=2, column=3).value == "lease.pdf"
         assert property_register.existing_hashes() == {"property-hash"}
         workbook.close()
+
+
+def test_matrix_article_normalization_accepts_only_numeric_and_trusted_arv() -> None:
+    exact = normalize_matrix_article("53")
+    arv = normalize_matrix_article("53 ARV")
+    ocr_word = normalize_matrix_article("203DA")
+
+    assert (exact.canonical, exact.reason) == ("53", "exact_numeric")
+    assert (arv.canonical, arv.reason) == ("53", "trusted_arv_removed")
+    assert (ocr_word.canonical, ocr_word.reason) == ("", "rejected_non_numeric")
+
+
+def test_caderneta_area_magnitude_is_bounded() -> None:
+    pages = discover_caderneta_pages("""
+    [Page 1] ACTUALIZAÇÃO DE CADERNETA PREDIAL RÚSTICAtributária Modelo A
+    IDENTIFICAÇÃO DO PRÉDIO
+    ARTIGO MATRICIAL Nº: 53 ARV
+    SECÇÃO: F
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta Segura
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 10001
+    TITULARES
+    """)
+    values = parse_caderneta(pages)
+    evidence = assess_cadastral_evidence(pages)
+
+    assert values.matrix_article == "53"
+    assert values.matrix_article_raw == "53ARV"
+    assert values.matrix_article_normalization == "trusted_arv_removed"
+    assert values.area_m2 is None
+    assert evidence.is_structurally_valid is True
+
+
+def test_caderneta_mismatch_selects_one_atomic_identity() -> None:
+    contract = PropertyExtractionPipeline().extract("""
+    CONTRATO DE ARRENDAMENTO
+    Senhorio, Arrendatário e renda mensal acordada.
+    Considerando que:
+    a) O prédio rústico denominado por Quinta Contrato, composto por olival,
+    artigo 999, secção K, área de 500 m2.
+    b) Cláusula seguinte.
+    """, allow_llm=False)
+    annex = """
+    [Page 11] CADERNETA PREDIAL RÚSTICA Modelo A
+    IDENTIFICAÇÃO DO PRÉDIO
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta Cadastral
+    ARTIGO MATRICIAL Nº: 123
+    SECÇÃO: M
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 1,5
+    TITULARES
+    """
+
+    result = recover_from_annexes(contract, annex)
+
+    assert (result.property_name, result.matrix_article, result.matrix_section, result.area_m2) == (
+        "Quinta Cadastral", "123", "M", 15000,
+    )
+    assert result.property_matrix_key == "123-M"
+    assert result.audit["identity_selection"] == {"source": "caderneta_predial", "atomic": True}
+
+
+def test_compound_external_property_pdf_preserves_every_caderneta() -> None:
+    compound_path = Path("VA777_Cadernetas_SP19000.pdf")
+    text = """
+    [Page 1] CADERNETA PREDIAL RÚSTICA Modelo A
+    IDENTIFICAÇÃO DO PRÉDIO
+    ARTIGO MATRICIAL Nº: 10
+    SECÇÃO: F
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta Um
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 1
+    TITULARES
+    [Page 2] CADERNETA PREDIAL RÚSTICA Modelo B
+    IDENTIFICAÇÃO DO PRÉDIO
+    ARTIGO MATRICIAL Nº: 20
+    SECÇÃO: G
+    NOME/LOCALIZAÇÃO PRÉDIO: Quinta Dois
+    ELEMENTOS DO PRÉDIO
+    ÁREA TOTAL (HA): 2
+    TITULARES
+    """
+    discovery = PropertyPackDiscovery(
+        [compound_path],
+        text_loader=lambda path: (text, "cached_ocr_pdf_layout_text"),
+    )
+    contract = PropertyExtractionPipeline().extract(
+        "Contrato de arrendamento entre Senhorio e Arrendatário, com renda.",
+        allow_llm=False,
+    )
+
+    match = discovery.find_for_contract(Path("VA777_CA.pdf"), "", contract)
+
+    assert match.status == "property_pack_multiple_preserved"
+    assert [item.matrix_key for item in match.cadastral_properties] == ["10-F", "20-G"]

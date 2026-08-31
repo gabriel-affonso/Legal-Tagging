@@ -13,7 +13,7 @@ ARTICLE_RE = re.compile(
     r"\s*(?:n[.ºo°]*\s*)?[:#-]?\s*(\d{1,8})\b",
     re.IGNORECASE,
 )
-SECTION_RE = re.compile(r"\bsec(?:c|ç)[aã]o\s*[:#-]?\s*([A-Z]{1,3})\b", re.IGNORECASE)
+SECTION_RE = re.compile(r"\bsec(?:c|ç)[aã]o\s*[:#-]?\s*([A-Z])\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)

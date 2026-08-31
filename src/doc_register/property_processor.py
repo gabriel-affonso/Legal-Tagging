@@ -44,6 +44,9 @@ class PropertyExtractionProcessor:
         existing_hashes = self.register.existing_hashes(PIPELINE_VERSION)
         pdf_files = self._iter_pdf_files()
         pack_discovery = PropertyPackDiscovery(pdf_files, config=self.config)
+        # Phase 1 is deliberately complete before phase 2 starts.  Matching a
+        # contract can therefore never depend on filesystem iteration order.
+        pack_discovery.build_catalog()
         processed = 0
         for path in pdf_files:
             digest = _sha256(path)
@@ -74,18 +77,42 @@ class PropertyExtractionProcessor:
                     result = _with_property_pack_audit(result, pack_match)
                     annex_text = _read_annex_text(path, self.config)
                     annex_groups = discover_caderneta_groups(annex_text)
-                    annex_pages, internal_caderneta_status = _select_internal_caderneta(
-                        result, annex_groups,
-                    )
+                    assessed_groups = [
+                        (group, assess_cadastral_evidence(group))
+                        for group in annex_groups
+                    ]
+                    verified_groups = [
+                        (group, evidence)
+                        for group, evidence in assessed_groups
+                        if evidence.is_structurally_valid
+                    ]
+                    if len(verified_groups) > 1:
+                        result = _with_multiple_cadastral_properties(result, verified_groups, path.name)
+                        annex_pages = []
+                        internal_caderneta_status = "multiple_cadernetas_preserved"
+                    else:
+                        annex_pages, internal_caderneta_status = _select_internal_caderneta(
+                            result, annex_groups,
+                        )
+                    if not annex_pages and len(pack_match.cadastral_properties) > 1:
+                        result = _with_multiple_cadastral_properties(
+                            result,
+                            [([], evidence) for evidence in pack_match.cadastral_properties],
+                            pack_match.source_path.name if pack_match.source_path else "external_caderneta",
+                            same_pdf=False,
+                        )
                     result = _with_internal_caderneta_audit(
                         result, annex_groups, internal_caderneta_status,
                     )
-                    result = _reconcile_property_evidence(result, pack_match, annex_pages, path.name)
+                    if result.status != "processed_multi_property":
+                        result = _reconcile_property_evidence(result, pack_match, annex_pages, path.name)
                     if not pack_match.caderneta_values and not annex_pages:
                         result = recover_from_annexes(result, "")
                     if (
-                        internal_caderneta_status not in {
+                        result.status != "processed_multi_property"
+                        and internal_caderneta_status not in {
                             "multiple_cadernetas_unresolved",
+                            "multiple_cadernetas_preserved",
                             "multiple_cadernetas_same_matrix_key",
                             "internal_caderneta_matrix_key_conflict",
                             "internal_caderneta_invalid_structure",
@@ -188,6 +215,12 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "property_matrix_key": result.get("property_matrix_key", ""),
         "area_m2": result.get("area_m2", ""),
         "confidence": result.get("confidence", ""),
+        "extraction_confidence": result.get("extraction_confidence", ""),
+        "identity_confidence": result.get("identity_confidence", ""),
+        "completeness_score": result.get("completeness_score", ""),
+        "consistency_score": result.get("consistency_score", ""),
+        "final_confidence": result.get("final_confidence", ""),
+        "properties": result.get("properties", []),
         "lease_score": result.get("lease_score", ""),
         "candidate_score": result.get("candidate_score", ""),
         "used_llm": result.get("used_llm", ""),
@@ -207,6 +240,7 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
         "property_pack_match_score": _audit_value(result, "property_pack_match_score"),
         "property_pack_match_method": _audit_value(result, "property_pack_match_method"),
         "property_pack_candidate_count": _audit_value(result, "property_pack_candidate_count"),
+        "property_pack_property_count": _audit_value(result, "property_pack_property_count"),
         "caderneta_source_file": _audit_value(result, "caderneta_source_file"),
         "crp_source_file": _audit_value(result, "crp_source_file"),
         "caderneta_evidence_sources": _audit_value(result, "caderneta_evidence_sources"),
@@ -216,7 +250,7 @@ def _excel_payload(payload: dict[str, object], result: dict[str, object]) -> dic
     }
 
 
-PIPELINE_VERSION = "3.3"
+PIPELINE_VERSION = "3.3.2"
 
 
 def _with_property_pack_audit(result, match: PropertyPackMatch):
@@ -267,7 +301,7 @@ def _select_internal_caderneta(result, groups: list[list[AnnexPage]]) -> tuple[l
         return [], "internal_caderneta_matrix_key_conflict"
     if len(verified) == 1:
         return verified[0][0], "internal_caderneta_selected"
-    return [], "multiple_cadernetas_unresolved"
+    return [], "multiple_cadernetas_preserved"
 
 
 def _with_internal_caderneta_audit(result, groups: list[list[AnnexPage]], status: str):
@@ -285,7 +319,6 @@ def _with_internal_caderneta_audit(result, groups: list[list[AnnexPage]], status
         ],
     })
     if status in {
-        "multiple_cadernetas_unresolved",
         "multiple_cadernetas_same_matrix_key",
         "internal_caderneta_matrix_key_conflict",
         "internal_caderneta_invalid_structure",
@@ -297,6 +330,74 @@ def _with_internal_caderneta_audit(result, groups: list[list[AnnexPage]], status
             audit=audit,
         )
     return replace(result, audit=audit)
+
+
+def _with_multiple_cadastral_properties(
+    result, verified_groups, contract_file_name: str, *, same_pdf: bool = True
+):
+    properties: list[dict[str, object]] = []
+    completeness_values: list[float] = []
+    identity_values: list[float] = []
+    verified_owners: list[str] = []
+    for group, evidence in verified_groups:
+        values = evidence.values
+        item = values.as_dict()
+        item.update({
+            "property_matrix_key": evidence.matrix_key,
+            "source_file": contract_file_name,
+            "pages": list(evidence.page_numbers),
+            "structure_status": evidence.structure_status,
+            "owner_status": evidence.owner_status,
+        })
+        properties.append(item)
+        cadastral_fields = (
+            values.property_name,
+            values.matrix_article,
+            values.matrix_section,
+            values.area_m2,
+        )
+        completeness_values.append(sum(value not in ("", None) for value in cadastral_fields) / 4)
+        identity_values.append(
+            0.50 * bool(values.matrix_article)
+            + 0.35 * bool(values.matrix_section)
+            + 0.15 * bool(values.property_name)
+        )
+        if evidence.owner_is_verified and values.owner_name:
+            verified_owners.append(values.owner_name)
+
+    completeness = min(completeness_values, default=0.0)
+    identity = min(identity_values, default=0.0)
+    extraction = 0.99
+    consistency = 1.0
+    final_confidence = min(extraction, identity, completeness, consistency)
+    common_owner = verified_owners[0] if verified_owners and len(set(verified_owners)) == 1 else ""
+    audit = dict(result.audit)
+    audit.update({
+        "multi_property_status": "preserved",
+        "multi_property_count": len(properties),
+        "caderneta_same_pdf_found": same_pdf,
+        "caderneta_evidence_sources": [contract_file_name],
+        "identity_selection": {"source": "caderneta_predial", "atomic": True, "multiple": True},
+    })
+    return replace(
+        result,
+        status="processed_multi_property",
+        reason="",
+        property_name="",
+        matrix_article="",
+        matrix_section="",
+        property_matrix_key="",
+        area_m2=None,
+        owner_name=common_owner,
+        properties=tuple(properties),
+        confidence=round(final_confidence * 100),
+        extraction_confidence=extraction,
+        identity_confidence=round(identity, 4),
+        completeness_score=round(completeness, 4),
+        consistency_score=consistency,
+        final_confidence=round(final_confidence, 4),
+        audit=audit,
+    )
 
 
 def _read_annex_text(path: Path, config: AppConfig) -> str:

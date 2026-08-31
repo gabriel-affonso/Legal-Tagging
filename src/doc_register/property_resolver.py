@@ -86,7 +86,7 @@ def extract_property_candidates(structure: DocumentStructure, document_text: str
 def _labelled_values(text: str) -> dict[str, str]:
     values = {
         "property_article": _capture(text, r"\bartigo\s+matricial(?:\s+n[.ºo°]+)?\s*[:#-]?\s*(\d{1,8})"),
-        "property_section": _capture(text, r"\bsec(?:c|ç)[aã]o\s*[:#-]?\s*([A-Z]{1,3})").upper(),
+        "property_section": _capture(text, r"\bsec(?:c|ç)[aã]o\s*[:#-]?\s*([A-Z])").upper(),
         "property_name": _capture(text, r"\b(?:nome\s*/?\s*)?localiza[cç][aã]o(?:\s+do)?\s+pr[eé]dio[ \t]*[\[\]|:;#-]*[ \t]*(?:\n[ \t]*)?([^\n,;.\[\]]{3,100})"),
         "property_parish": _capture(text, r"\bfreguesia\s*(?:de\s+)?[:#-]?\s*(?:\d{1,3}\s*-\s*)?([^,;\n.]{3,80})"),
         "owner_name": _capture(text, r"(?m)^[ \t]*(?:nome|titular|propriet[aá]rio)[ \t]*[:#-][ \t]*([^\n,;.]{8,180})"),
@@ -167,7 +167,7 @@ def cadastral_property_groups(structure: DocumentStructure, document_text: str) 
 def _contract_matrix_keys(text: str) -> set[str]:
     keys: set[str] = set()
     for match in re.finditer(
-        r"\bartigo(?:\s+matricial)?\s+(\d{1,8})(?:\s*\([^)]*\))?.{0,90}?\bsec(?:c|ç)[aã]o\s+([A-Z]{1,3})\b",
+        r"\bartigo(?:\s+matricial)?\s+(\d{1,8})(?:\s*\([^)]*\))?.{0,90}?\bsec(?:c|ç)[aã]o\s+([A-Z])\b",
         text,
         re.I | re.S,
     ):
