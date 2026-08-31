@@ -18,6 +18,7 @@ from .property_intelligence import discover_caderneta_groups
 from .registry import ExcelRegister, PropertyTableRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .ai_reviewer import review_if_needed
+from .vision_recovery import recover_contract_with_vision
 from .step33_engine import (
     apply_field_centric_extraction,
     prepare_field_centric_extraction,
@@ -50,6 +51,7 @@ class DocumentProcessor:
         self.config = config
         self.register = ExcelRegister(config.excel_path)
         self.property_table_register = PropertyTableRegister(config.excel_path)
+        self._vision_failures = 0
 
     def scan_once(
         self,
@@ -58,6 +60,7 @@ class DocumentProcessor:
         property_table: bool = False,
     ) -> int:
         self.config.ensure_directories()
+        self._vision_failures = 0
         target_register = self.property_table_register if property_table else self.register
         existing_hashes = set() if reprocess_cadernetas else target_register.existing_hashes()
         processed = 0
@@ -348,6 +351,25 @@ class DocumentProcessor:
         # run (no last-write-wins publication).
         result = apply_field_centric_extraction(result, step33_report)
         result = apply_contract_final_resolution(result, final_resolution_report)
+        if self._vision_failures < int(self.config.vision_max_failures_per_batch):
+            result, vision_applied = recover_contract_with_vision(
+                result,
+                config=self.config,
+                file_name=candidate.source_path.name,
+                pdf_path=candidate.copied_path,
+                signals=signals,
+                final_resolution_report=final_resolution_report,
+            )
+            vision_audit = result.raw_json.get("vision_recovery", {}) if isinstance(result.raw_json, dict) else {}
+            self._vision_failures += len(vision_audit.get("failures", [])) if isinstance(vision_audit, dict) else 0
+            if vision_applied:
+                # Vision candidates are added to the same candidate graph as
+                # OCR and deterministic evidence; the final resolver remains
+                # the only component that publishes contract fields.
+                result = apply_contract_final_resolution(result, final_resolution_report)
+        elif self.config.vision_enabled:
+            result.vision_status = "CIRCUIT_OPEN"
+            result.vision_trigger_reason = "vision_failure_limit_reached"
         result = apply_output_safety(result, document_text=document_text)
         result = validate_result(
             result,

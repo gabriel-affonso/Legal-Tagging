@@ -436,6 +436,58 @@ def _add(report: ContractResolutionReport, candidate: FactCandidate) -> None:
         report.candidates.append(candidate)
 
 
+def inject_vision_candidates(report: ContractResolutionReport, candidates: Iterable[object]) -> list[str]:
+    """Add Step 3.5 candidates without letting Vision write output directly.
+
+    The caller has already enforced the visual acceptance policy.  We still
+    run every candidate through this module's normalisation, field validation,
+    deduplication and final conflict resolution.
+    """
+    added_fields: list[str] = []
+    for proposal in candidates:
+        field_name = str(getattr(proposal, "field_name", "") or "").strip()
+        raw_value = str(getattr(proposal, "proposed_value", "") or "").strip()
+        evidence = str(getattr(proposal, "evidence", "") or "").strip()
+        page_number = getattr(proposal, "page_number", None)
+        confidence = float(getattr(proposal, "confidence", 0.0) or 0.0)
+        if not field_name or not raw_value or not evidence:
+            continue
+        if field_name == "signed_date":
+            normalized_date = normalize_date(raw_value)
+            if not normalized_date:
+                continue
+            raw_value = normalized_date
+        role = "lessor" if field_name == "lessor" else "lessee" if field_name in {"lessee", "lessee_tax_id"} else ""
+        visual_quality = max(0.50, min(0.85, 0.45 + confidence * 0.35))
+        zone = DocumentZone(
+            page_number=int(page_number) if isinstance(page_number, int) else None,
+            zone_type="vision_contract_first_page",
+            confidence=max(0.0, min(1.0, confidence)),
+            matched_signals=["visual_explicit_evidence"],
+            text_span=evidence[:900],
+            # This field is historically named OCR quality.  For this
+            # candidate it is a bounded visual legibility score and the true
+            # source is explicit in source_type/source_zone.
+            ocr_quality=visual_quality,
+            internal_document="vision_page",
+        )
+        candidate = _candidate(
+            field_name,
+            raw_value,
+            zone,
+            role,
+            "vision_explicit_page_evidence",
+            max(0.0, min(1.0, confidence)),
+        )
+        before = len(report.candidates)
+        _add(report, candidate)
+        if len(report.candidates) > before:
+            added_fields.append(field_name)
+    if added_fields:
+        _resolve_entities(report)
+    return list(dict.fromkeys(added_fields))
+
+
 def _resolve_entities(report: ContractResolutionReport) -> None:
     for index, candidate in enumerate(report.candidates, start=1):
         if candidate.field not in {"lessor", "lessee", "cadastral_owner"}:
@@ -683,14 +735,15 @@ def _strict_fields() -> set[str]:
 
 def _authority(field_name: str, zone_type: str) -> float:
     matrix = {
-        "property_article": {"cadastral_record": 0.99, "land_registry_certificate": 0.97, "property_recital": 0.84, "object_clause": 0.80},
-        "property_section": {"cadastral_record": 0.99, "land_registry_certificate": 0.97, "property_recital": 0.84},
         "property_name": {"cadastral_record": 0.98, "land_registry_certificate": 0.96, "property_recital": 0.84, "parcel_plan": 0.75},
-        "lessor": {"party_identification": 0.99, "signature_recognition": 0.94, "landlord_identification_annex": 0.92, "signature_page": 0.88, "notification_block": 0.80},
-        "lessee": {"party_identification": 0.99, "signature_recognition": 0.92, "notification_block": 0.80, "corporate_registry": 0.72},
-        "signed_date": {"signature_page": 0.97, "signature_recognition": 0.66},
+        "lessor": {"party_identification": 0.99, "signature_recognition": 0.94, "landlord_identification_annex": 0.92, "signature_page": 0.88, "notification_block": 0.80, "vision_contract_first_page": 0.72},
+        "lessee": {"party_identification": 0.99, "signature_recognition": 0.92, "notification_block": 0.80, "corporate_registry": 0.72, "vision_contract_first_page": 0.72},
+        "lessee_tax_id": {"party_identification": 0.94, "vision_contract_first_page": 0.70},
+        "property_article": {"cadastral_record": 0.99, "land_registry_certificate": 0.97, "property_recital": 0.84, "object_clause": 0.80, "vision_contract_first_page": 0.64},
+        "property_section": {"cadastral_record": 0.99, "land_registry_certificate": 0.97, "property_recital": 0.84, "vision_contract_first_page": 0.64},
+        "signed_date": {"signature_page": 0.97, "signature_recognition": 0.66, "vision_contract_first_page": 0.62},
     }
-    default = {"rent_clause": 0.96, "term_clause": 0.90, "cadastral_record": 0.91, "land_registry_certificate": 0.90, "legacy_output": 0.05}.get(zone_type, 0.55)
+    default = {"rent_clause": 0.96, "term_clause": 0.90, "cadastral_record": 0.91, "land_registry_certificate": 0.90, "vision_contract_first_page": 0.62, "legacy_output": 0.05}.get(zone_type, 0.55)
     return matrix.get(field_name, {}).get(zone_type, default)
 
 

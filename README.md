@@ -38,8 +38,10 @@ O processamento é híbrido e conservador:
 21. Step 3.3.3: o resolvedor de contratos é o único publicador final após fontes especializadas. O audit inclui candidatos rejeitados, decisão final, evidência de titularidade separada (`contract_lessors`, `declared_owners`, `cadastral_owners`) e conflitos preservados.
 22. A revisão por IA é segmentada em grupos de partes, imóvel e datas/termos; timeout num grupo não descarta decisões já aceites noutro grupo.
 23. Step 3.4: `scan --property-table` e `watch --property-table` escrevem na sheet `Property Table`, com uma linha por matriz e os campos contratuais comuns repetidos de forma controlada.
-24. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-25. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+24. Step 3.5: fallback visual local opcional com `qwen3-vl:4b-instruct` (família Qwen3-VL 4B). Depois de esgotar OCR, regras, LLM textual e o resolvedor contratual, analisa apenas as primeiras páginas de contratos com OCR fraco e campos críticos incertos. A imagem nunca sai da máquina nem é gravada em log.
+25. Step 3.5 começa em modo sombra: propostas visuais são auditadas, mas não alteram o registo. Mesmo quando a aplicação é explicitamente ativada, texto manuscrito, caracteres incertos e conflitos exigem revisão humana.
+26. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+27. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -104,6 +106,37 @@ Edite `config.json` e ajuste principalmente:
 - `ai_review_max_evidence_chars`: limite de caracteres de evidência enviados ao Step 2.
 - `contract_clause_segmentation_enabled`: ativa o Step 2.4 para contratos.
 - `contract_clause_segmentation_max_clause_chars`: limite por cláusula guardada em `raw_json["contract_clause_segmentation"]`.
+- `vision_enabled`: ativa o Step 3.5. O padrão é `false`.
+- `vision_model`: modelo visual local; usar `qwen3-vl:4b-instruct` em máquinas com 16 GB de RAM.
+- `vision_apply_proposals`: mantenha `false` no período de modo sombra. Somente depois de validar uma amostra real deve ser ativado.
+- `vision_auto_accept_enabled`: exige também `vision_apply_proposals=true`; não aceita manuscritos, texto incerto ou conflitos.
+
+### Step 3.5 — recuperação visual local
+
+Instale o modelo apenas quando for iniciar os testes locais:
+
+```bash
+ollama pull qwen3-vl:4b-instruct
+```
+
+Comece com a configuração abaixo. Ela executa o Vision apenas para contratos
+com pontos críticos incertos e OCR fraco nas duas primeiras páginas, mas não
+altera nenhum campo no Excel:
+
+```json
+{
+  "vision_enabled": true,
+  "vision_model": "qwen3-vl:4b-instruct",
+  "vision_apply_proposals": false,
+  "vision_auto_accept_enabled": false
+}
+```
+
+As propostas ficam em `raw_json["vision_recovery"]` e nas colunas técnicas
+`vision_*`. O modelo textual é descarregado antes da chamada visual e a
+chamada visual usa `keep_alive: 0`; portanto os dois modelos não ficam
+carregados juntos. Veja [Step 3.5](docs/step3.5.md) para gatilhos, segurança e
+rollout.
 
 ## Usar uma vez
 

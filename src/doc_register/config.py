@@ -40,6 +40,22 @@ class AppConfig:
     property_extraction_dir: Path | None = None
     property_llm_enabled: bool = True
     property_llm_timeout_seconds: int = 180
+    # Step 3.5: visual recovery is deliberately opt-in.  The first rollout is
+    # shadow-only, so a vision model can never change the register by default.
+    vision_enabled: bool = False
+    vision_model: str = "qwen3-vl:4b-instruct"
+    vision_timeout_seconds: int = 240
+    vision_first_page_count: int = 2
+    vision_max_pages_per_document: int = 2
+    vision_render_dpi: int = 160
+    vision_max_image_pixels: int = 3_000_000
+    vision_ocr_quality_threshold: float = 0.60
+    vision_critical_candidate_threshold: float = 0.78
+    vision_apply_proposals: bool = False
+    vision_auto_accept_enabled: bool = False
+    vision_auto_accept_confidence: float = 0.95
+    vision_keep_alive: str = "0"
+    vision_max_failures_per_batch: int = 3
 
     @classmethod
     def from_json(cls, path: Path) -> "AppConfig":
@@ -99,6 +115,20 @@ class AppConfig:
             property_llm_timeout_seconds=int(
                 raw.get("property_llm_timeout_seconds", 180)
             ),
+            vision_enabled=_as_bool(raw.get("vision_enabled", False)),
+            vision_model=str(raw.get("vision_model", "qwen3-vl:4b-instruct")),
+            vision_timeout_seconds=int(raw.get("vision_timeout_seconds", 240)),
+            vision_first_page_count=int(raw.get("vision_first_page_count", 2)),
+            vision_max_pages_per_document=int(raw.get("vision_max_pages_per_document", 2)),
+            vision_render_dpi=int(raw.get("vision_render_dpi", 160)),
+            vision_max_image_pixels=int(raw.get("vision_max_image_pixels", 3_000_000)),
+            vision_ocr_quality_threshold=float(raw.get("vision_ocr_quality_threshold", 0.60)),
+            vision_critical_candidate_threshold=float(raw.get("vision_critical_candidate_threshold", 0.78)),
+            vision_apply_proposals=_as_bool(raw.get("vision_apply_proposals", False)),
+            vision_auto_accept_enabled=_as_bool(raw.get("vision_auto_accept_enabled", False)),
+            vision_auto_accept_confidence=float(raw.get("vision_auto_accept_confidence", 0.95)),
+            vision_keep_alive=str(raw.get("vision_keep_alive", "0")),
+            vision_max_failures_per_batch=int(raw.get("vision_max_failures_per_batch", 3)),
         )
 
     def ensure_directories(self) -> None:
