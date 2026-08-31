@@ -32,7 +32,7 @@ def _configure_logging(log_dir: Path, log_level: str) -> None:
     root.addHandler(file_handler)
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local PDF document register powered by Ollama.")
     parser.add_argument(
         "command",
@@ -46,7 +46,23 @@ def main() -> None:
         action="store_true",
         help="Reprocess existing main-register PDFs and replace their rows to apply internal caderneta extraction.",
     )
+    parser.add_argument(
+        "--property-table",
+        action="store_true",
+        help=(
+            "Write the main pipeline to the 'Property Table' worksheet with one row per "
+            "resolved property instead of one row per contract."
+        ),
+    )
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
+
+    if args.property_table and args.command in {"property-scan", "property-watch"}:
+        parser.error("--property-table is available only with scan or watch")
 
     config = AppConfig.from_json(Path(args.config).expanduser().resolve())
     _configure_logging(config.log_dir, args.log_level)
@@ -71,13 +87,16 @@ def main() -> None:
     processor = DocumentProcessor(config)
 
     if args.command == "scan":
-        processed = processor.scan_once(reprocess_cadernetas=args.reprocess_cadernetas)
+        processed = processor.scan_once(
+            reprocess_cadernetas=args.reprocess_cadernetas,
+            property_table=args.property_table,
+        )
         logging.info("Scan complete. Processed %s new PDF(s).", processed)
         return
 
     logging.info("Watching %s every %s seconds.", config.input_dir, config.poll_interval_seconds)
     while True:
-        processed = processor.scan_once()
+        processed = processor.scan_once(property_table=args.property_table)
         logging.info("Watch cycle complete. Processed %s new PDF(s).", processed)
         time.sleep(config.poll_interval_seconds)
 

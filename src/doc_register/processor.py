@@ -15,7 +15,7 @@ from .models import ExtractionResult, PdfCandidate
 from .ollama_client import OllamaConnectionError, extract_with_ollama
 from .pdf_text import extract_pdf_caderneta_text, extract_text_with_optional_ocr, run_ocrmypdf
 from .property_intelligence import discover_caderneta_groups
-from .registry import ExcelRegister
+from .registry import ExcelRegister, PropertyTableRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .ai_reviewer import review_if_needed
 from .step33_engine import (
@@ -49,10 +49,17 @@ class DocumentProcessor:
     def __init__(self, config: AppConfig):
         self.config = config
         self.register = ExcelRegister(config.excel_path)
+        self.property_table_register = PropertyTableRegister(config.excel_path)
 
-    def scan_once(self, *, reprocess_cadernetas: bool = False) -> int:
+    def scan_once(
+        self,
+        *,
+        reprocess_cadernetas: bool = False,
+        property_table: bool = False,
+    ) -> int:
         self.config.ensure_directories()
-        existing_hashes = set() if reprocess_cadernetas else self.register.existing_hashes()
+        target_register = self.property_table_register if property_table else self.register
+        existing_hashes = set() if reprocess_cadernetas else target_register.existing_hashes()
         processed = 0
 
         for source_path in self._iter_pdf_files():
@@ -63,7 +70,11 @@ class DocumentProcessor:
                     LOGGER.info("Skipping duplicate PDF: %s", source_path.name)
                     continue
 
-                self._process_candidate(candidate, replace_existing=reprocess_cadernetas)
+                self._process_candidate(
+                    candidate,
+                    replace_existing=reprocess_cadernetas,
+                    property_table=property_table,
+                )
                 existing_hashes.add(candidate.sha256)
                 processed += 1
             except OllamaConnectionError as exc:
@@ -81,7 +92,9 @@ class DocumentProcessor:
             except Exception as exc:
                 LOGGER.exception("Failed to process %s", source_path)
                 if candidate and candidate.sha256 not in existing_hashes:
-                    if reprocess_cadernetas:
+                    if property_table:
+                        self.property_table_register.upsert(candidate, _error_result(exc))
+                    elif reprocess_cadernetas:
                         self.register.upsert(candidate, _error_result(exc))
                     else:
                         self.register.append(candidate, _error_result(exc))
@@ -139,7 +152,13 @@ class DocumentProcessor:
         safe_stem = safe_stem[:80] or "document"
         return self.config.processing_dir / f"{safe_stem}__{digest[:12]}.pdf"
 
-    def _process_candidate(self, candidate: PdfCandidate, *, replace_existing: bool = False) -> None:
+    def _process_candidate(
+        self,
+        candidate: PdfCandidate,
+        *,
+        replace_existing: bool = False,
+        property_table: bool = False,
+    ) -> None:
         started_at = time.monotonic()
         LOGGER.info("Extracting text from %s", candidate.copied_path.name)
 
@@ -346,7 +365,14 @@ class DocumentProcessor:
             # allow a later sanitiser to overwrite its selected candidates.
             entity_resolution=False,
         )
-        if replace_existing:
+        if property_table:
+            property_rows = self.property_table_register.upsert(candidate, result)
+            LOGGER.info(
+                "Registered %s property row(s) for %s in Property Table.",
+                property_rows,
+                candidate.source_path.name,
+            )
+        elif replace_existing:
             self.register.upsert(candidate, result)
         else:
             self.register.append(candidate, result)

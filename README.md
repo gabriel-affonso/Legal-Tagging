@@ -37,8 +37,9 @@ O processamento é híbrido e conservador:
 20. A renda passa a suportar frequência e unidade. Renda anual por hectare preenche `rent_*` e `annual_rent`, sem inventar ou exigir `monthly_rent`.
 21. Step 3.3.3: o resolvedor de contratos é o único publicador final após fontes especializadas. O audit inclui candidatos rejeitados, decisão final, evidência de titularidade separada (`contract_lessors`, `declared_owners`, `cadastral_owners`) e conflitos preservados.
 22. A revisão por IA é segmentada em grupos de partes, imóvel e datas/termos; timeout num grupo não descarta decisões já aceites noutro grupo.
-23. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
-24. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
+23. Step 3.4: `scan --property-table` e `watch --property-table` escrevem na sheet `Property Table`, com uma linha por matriz e os campos contratuais comuns repetidos de forma controlada.
+24. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.
+25. Marcação automática de `needs_review`/`human_review_required` quando houver baixa confiança, conflito de categoria, OCR fraco, campos essenciais ausentes, valores suspeitos ou proposta de IA que precise de validação humana.
 
 Se o Ollama local expirar, o pipeline não perde o documento inteiro:
 
@@ -367,6 +368,26 @@ candidatos alternativos rejeitados e a decisão explícita de que uma renda
 anual por hectare não tem `monthly_rent` aplicável. A IA faz revisões menores
 e independentes; as falhas ficam auditadas sem reverter os resultados dos
 outros grupos. Veja [docs/step3.3.3.md](docs/step3.3.3.md).
+
+## Step 3.4 Property Table
+
+O modo opcional abaixo executa o pipeline principal, mas escreve o resultado
+na sheet `Property Table` com uma linha por propriedade:
+
+```bash
+PYTHONPATH=src python3 -m doc_register scan --property-table
+```
+
+Para reprocessar todos os contratos e substituir atomicamente as linhas já
+existentes pelo mesmo SHA-256:
+
+```bash
+PYTHONPATH=src python3 -m doc_register scan --property-table --reprocess-cadernetas
+```
+
+O modo padrão `scan` continua a escrever uma linha por contrato em
+`Document Register`. Consulte [docs/step3.4.md](docs/step3.4.md) para o schema,
+as regras de correspondência matricial e os estados de revisão.
 
 ## Step 2.6 Entity Resolution
 

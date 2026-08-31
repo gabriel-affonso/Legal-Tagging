@@ -11,10 +11,33 @@ except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 
 from .models import ExtractionResult, PdfCandidate, REGISTER_COLUMNS
+from .property_table import build_property_table_rows
+from .schemas import OPERATIONAL_FIELDS
 
 
 SHEET_NAME = "Document Register"
 PROPERTY_SHEET_NAME = "Property Extraction"
+PROPERTY_TABLE_SHEET_NAME = "Property Table"
+
+PROPERTY_TABLE_METADATA_COLUMNS = (
+    "property_table_version",
+    "property_row_id",
+    "property_index",
+    "property_count",
+    "property_row_status",
+    "property_match_status",
+    "property_source_pages",
+    "property_structure_status",
+    "property_owner_status",
+    "property_source_file",
+    "property_total_area_m2",
+    "property_json",
+)
+PROPERTY_TABLE_COLUMNS = tuple([
+    *OPERATIONAL_FIELDS,
+    *PROPERTY_TABLE_METADATA_COLUMNS,
+    *(column for column in REGISTER_COLUMNS if column not in OPERATIONAL_FIELDS),
+])
 
 PROPERTY_REGISTER_COLUMNS = (
     "pipeline_version",
@@ -214,6 +237,131 @@ class ExcelRegister:
             table.ref = f"A1:{last_column}{max(sheet.max_row, 1)}"
 
 
+class PropertyTableRegister:
+    """Step 3.4 worksheet with one row per resolved cadastral property."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def existing_hashes(self) -> set[str]:
+        with _workbook_lock(self.path):
+            workbook, sheet = self._load()
+            sha_col = PROPERTY_TABLE_COLUMNS.index("sha256") + 1
+            values = {
+                str(sheet.cell(row=row, column=sha_col).value)
+                for row in range(2, sheet.max_row + 1)
+                if sheet.cell(row=row, column=sha_col).value
+            }
+            workbook.close()
+            return values
+
+    def upsert(self, candidate: PdfCandidate, result: ExtractionResult) -> int:
+        """Atomically replace every property row belonging to one contract."""
+        rows = build_property_table_rows(result)
+        processed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        operational = {
+            "processed_at": processed_at,
+            "source_file_name": candidate.source_path.name,
+            "copied_file_path": str(candidate.copied_path),
+            "sha256": candidate.sha256,
+            "file_created_at": candidate.created_at.isoformat(),
+            "file_modified_at": candidate.modified_at.isoformat(),
+        }
+        with _workbook_lock(self.path):
+            workbook, sheet = self._load()
+            sha_col = PROPERTY_TABLE_COLUMNS.index("sha256") + 1
+            for row_index in range(sheet.max_row, 1, -1):
+                if str(sheet.cell(row=row_index, column=sha_col).value or "") == candidate.sha256:
+                    sheet.delete_rows(row_index)
+            for property_row in rows:
+                payload = {**property_row, **operational}
+                payload["property_row_id"] = (
+                    f"{candidate.sha256}:{payload.get('property_row_id') or 'unresolved'}"
+                )
+                sheet.append([
+                    _excel_value(payload.get(column, ""))
+                    for column in PROPERTY_TABLE_COLUMNS
+                ])
+            self._format(sheet)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            workbook.save(self.path)
+            workbook.close()
+        return len(rows)
+
+    def _load(self):
+        try:
+            from openpyxl import Workbook, load_workbook
+        except ImportError as exc:
+            raise RuntimeError("Missing dependency: install openpyxl with `pip install -r requirements.txt`.") from exc
+
+        if self.path.exists():
+            workbook = load_workbook(self.path)
+            if PROPERTY_TABLE_SHEET_NAME in workbook.sheetnames:
+                sheet = workbook[PROPERTY_TABLE_SHEET_NAME]
+            else:
+                sheet = workbook.create_sheet(PROPERTY_TABLE_SHEET_NAME)
+                sheet.append(PROPERTY_TABLE_COLUMNS)
+                _add_table(sheet, "PropertyTable", len(PROPERTY_TABLE_COLUMNS))
+            migrated = _ensure_named_headers(sheet, PROPERTY_TABLE_COLUMNS)
+            if not sheet.tables:
+                _add_table(sheet, "PropertyTable", len(PROPERTY_TABLE_COLUMNS))
+                migrated = True
+            if migrated:
+                self._format(sheet)
+                workbook.save(self.path)
+            return workbook, sheet
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = PROPERTY_TABLE_SHEET_NAME
+        sheet.append(PROPERTY_TABLE_COLUMNS)
+        _add_table(sheet, "PropertyTable", len(PROPERTY_TABLE_COLUMNS))
+        self._format(sheet)
+        return workbook, sheet
+
+    def _format(self, sheet) -> None:
+        sheet.freeze_panes = "A2"
+        sheet.sheet_view.showGridLines = False
+        widths = {
+            "property_table_version": 16,
+            "property_row_id": 78,
+            "property_index": 14,
+            "property_count": 14,
+            "property_row_status": 24,
+            "property_match_status": 30,
+            "property_source_pages": 22,
+            "property_structure_status": 24,
+            "property_owner_status": 24,
+            "property_source_file": 34,
+            "property_total_area_m2": 22,
+            "property_json": 72,
+            "processed_at": 22,
+            "source_file_name": 38,
+            "copied_file_path": 48,
+            "sha256": 66,
+            "lessor": 38,
+            "lessee": 34,
+            "property_name": 42,
+            "property_matrix_key": 20,
+            "property_parish": 24,
+            "property_municipality": 24,
+            "property_district": 22,
+            "property_total_area": 20,
+            "owner_name": 38,
+            "review_reason": 50,
+            "raw_json": 72,
+        }
+        for index, header in enumerate(PROPERTY_TABLE_COLUMNS, start=1):
+            if header in widths:
+                sheet.column_dimensions[_column_letter(index)].width = widths[header]
+        area_column = PROPERTY_TABLE_COLUMNS.index("property_total_area_m2") + 1
+        for row_index in range(2, sheet.max_row + 1):
+            sheet.cell(row=row_index, column=area_column).number_format = '#,##0.00'
+        if sheet.tables:
+            table = next(iter(sheet.tables.values()))
+            table.ref = f"A1:{_column_letter(len(PROPERTY_TABLE_COLUMNS))}{max(sheet.max_row, 1)}"
+
+
 def _ensure_headers(sheet) -> bool:
     existing_headers = [
         sheet.cell(row=1, column=column).value
@@ -360,6 +508,32 @@ class PropertyExcelRegister:
 
 def _excel_value(value: object) -> object:
     return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+
+
+def _ensure_named_headers(sheet, columns: tuple[str, ...]) -> bool:
+    existing_headers = [
+        str(sheet.cell(row=1, column=column).value or "")
+        for column in range(1, max(sheet.max_column, len(columns)) + 1)
+    ]
+    if existing_headers[:len(columns)] == list(columns):
+        return False
+
+    rows = [
+        {
+            header: sheet.cell(row=row_index, column=column_index).value
+            for column_index, header in enumerate(existing_headers, start=1)
+            if header
+        }
+        for row_index in range(2, sheet.max_row + 1)
+    ]
+    if sheet.max_row:
+        sheet.delete_rows(1, sheet.max_row)
+    if sheet.max_column:
+        sheet.delete_cols(1, sheet.max_column)
+    sheet.append(columns)
+    for row in rows:
+        sheet.append([row.get(column, "") for column in columns])
+    return True
 
 
 def _ensure_property_headers(sheet) -> bool:

@@ -89,6 +89,8 @@ def _labelled_values(text: str) -> dict[str, str]:
         "property_section": _capture(text, r"\bsec(?:c|ç)[aã]o\s*[:#-]?\s*([A-Z])").upper(),
         "property_name": _capture(text, r"\b(?:nome\s*/?\s*)?localiza[cç][aã]o(?:\s+do)?\s+pr[eé]dio[ \t]*[\[\]|:;#-]*[ \t]*(?:\n[ \t]*)?([^\n,;.\[\]]{3,100})"),
         "property_parish": _capture(text, r"\bfreguesia\s*(?:de\s+)?[:#-]?\s*(?:\d{1,3}\s*-\s*)?([^,;\n.]{3,80})"),
+        "property_municipality": _capture(text, r"\b(?:concelho|munic[ií]pio)\s*(?:de\s+)?[:#-]?\s*([^,;\n.]{3,80})"),
+        "property_district": _capture(text, r"\bdistrito\s*(?:de\s+)?[:#-]?\s*([^,;\n.]{3,80})"),
         "owner_name": _capture(text, r"(?m)^[ \t]*(?:nome|titular|propriet[aá]rio)[ \t]*[:#-][ \t]*([^\n,;.]{8,180})"),
         "owner_tax_id": _capture(text, r"\b(?:NIF|NIPC|identifica[cç][aã]o\s+fiscal)\s*(?:n[.ºo°]?\s*)?[:#-]?\s*(\d{9})"),
     }
@@ -150,16 +152,24 @@ def cadastral_property_groups(structure: DocumentStructure, document_text: str) 
             continue
         values = evidence.values
         text = "\n".join(page.text for page in pages)
+        labelled = _labelled_values(text)
         groups.append({
             "matrix_key": evidence.matrix_key,
             "property_name": values.property_name,
             "property_article": values.matrix_article,
             "property_section": values.matrix_section,
             "property_total_area": f"{values.area_m2 / 10000:g} hectares" if values.area_m2 is not None else "",
+            "property_total_area_m2": values.area_m2,
+            "property_parish": labelled.get("property_parish", ""),
+            "property_municipality": labelled.get("property_municipality", ""),
+            "property_district": labelled.get("property_district", ""),
             "owner_name": values.owner_name if evidence.owner_is_verified else "",
             "owner_tax_id": _owner_tax_id(text) if evidence.owner_is_verified else "",
             "pages": [page.page_number for page in pages],
             "matched_contract_identity": evidence.matrix_key in contract_keys,
+            "structure_status": evidence.structure_status,
+            "owner_status": evidence.owner_status,
+            "source_file": "internal_contract_annex",
         })
     return groups
 
