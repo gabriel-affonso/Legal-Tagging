@@ -109,6 +109,41 @@ class ExcelRegister:
             workbook.close()
             return values
 
+    def eligible_contract_hashes(self) -> set[str]:
+        """Return only PDFs already classified as lease contracts.
+
+        ``property-scan`` is the eligibility gate for Property Table.  This
+        prevents the heavier main pipeline from opening non-contract PDFs just
+        to eventually discard them from the worksheet.
+        """
+        if not self.path.exists():
+            return set()
+        with _workbook_lock(self.path):
+            try:
+                from openpyxl import load_workbook
+            except ImportError as exc:
+                raise RuntimeError("Missing dependency: install openpyxl with `pip install -r requirements.txt`.") from exc
+            workbook = load_workbook(self.path, read_only=True, data_only=True)
+            try:
+                if PROPERTY_SHEET_NAME not in workbook.sheetnames:
+                    return set()
+                sheet = workbook[PROPERTY_SHEET_NAME]
+                headers = {
+                    str(cell.value): index
+                    for index, cell in enumerate(next(sheet.iter_rows(min_row=1, max_row=1, values_only=False)), start=1)
+                    if cell.value
+                }
+                if not {"sha256", "document_type"}.issubset(headers):
+                    return set()
+                return {
+                    str(values[headers["sha256"] - 1])
+                    for values in sheet.iter_rows(min_row=2, values_only=True)
+                    if str(values[headers["document_type"] - 1] or "").strip().lower() == "lease_contract"
+                    and values[headers["sha256"] - 1]
+                }
+            finally:
+                workbook.close()
+
     def append(self, candidate: PdfCandidate, result: ExtractionResult) -> None:
         self._write(candidate, result, replace_existing=False)
 

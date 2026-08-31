@@ -408,8 +408,12 @@ O modo opcional abaixo executa o pipeline principal, mas escreve o resultado
 na sheet `Property Table` com uma linha por propriedade:
 
 ```bash
+PYTHONPATH=src python3 -m doc_register property-scan
 PYTHONPATH=src python3 -m doc_register scan --property-table
 ```
+
+`property-scan` é a etapa de elegibilidade: `--property-table` só processa
+PDFs já classificados como `lease_contract` na sheet `Property Extraction`.
 
 Para reprocessar todos os contratos e substituir atomicamente as linhas já
 existentes pelo mesmo SHA-256:

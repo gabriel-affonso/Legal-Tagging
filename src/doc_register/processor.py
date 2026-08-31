@@ -63,12 +63,28 @@ class DocumentProcessor:
         self._vision_failures = 0
         target_register = self.property_table_register if property_table else self.register
         existing_hashes = set() if reprocess_cadernetas else target_register.existing_hashes()
+        eligible_contract_hashes = (
+            self.property_table_register.eligible_contract_hashes()
+            if property_table else set()
+        )
+        if property_table and not eligible_contract_hashes:
+            LOGGER.warning(
+                "Property Table found no lease contracts in Property Extraction; "
+                "run property-scan before materializing the table."
+            )
         processed = 0
 
         for source_path in self._iter_pdf_files():
             candidate: PdfCandidate | None = None
             try:
-                candidate = self._copy_candidate(source_path)
+                digest = _sha256(source_path) if property_table else ""
+                if property_table and digest not in eligible_contract_hashes:
+                    LOGGER.info(
+                        "Skipping non-lease PDF for Property Table: %s",
+                        source_path.name,
+                    )
+                    continue
+                candidate = self._copy_candidate(source_path, digest=digest or None)
                 if candidate.sha256 in existing_hashes:
                     LOGGER.info("Skipping duplicate PDF: %s", source_path.name)
                     continue
@@ -129,8 +145,8 @@ class DocumentProcessor:
 
         return sorted(files, key=lambda item: item.stat().st_mtime)
 
-    def _copy_candidate(self, source_path: Path) -> PdfCandidate:
-        digest = _sha256(source_path)
+    def _copy_candidate(self, source_path: Path, *, digest: str | None = None) -> PdfCandidate:
+        digest = digest or _sha256(source_path)
         stat = source_path.stat()
         created_at = datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc)
         modified_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)

@@ -4,11 +4,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import json
+import hashlib
 from tempfile import TemporaryDirectory
 import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from doc_register.__main__ import _build_parser
 from doc_register.models import ExtractionResult, PdfCandidate
+from doc_register.processor import DocumentProcessor
 from doc_register.property_table import build_property_table_rows
 from doc_register.registry import (
     PROPERTY_TABLE_COLUMNS,
@@ -282,12 +286,54 @@ def test_register_enriches_main_result_with_independent_property_extraction() ->
         candidate = PdfCandidate(Path("PR100_CA.pdf"), Path("PR100_CA.pdf"), digest, now, now)
         main_result = ExtractionResult(document_category="other")
 
-        enriched = PropertyTableRegister(workbook_path).enrich_from_property_extraction(candidate, main_result)
+        register = PropertyTableRegister(workbook_path)
+        assert register.eligible_contract_hashes() == {digest}
+        enriched = register.enrich_from_property_extraction(candidate, main_result)
         rows = build_property_table_rows(enriched)
 
-    assert enriched.document_category == "lease_contract"
-    assert [row["property_matrix_key"] for row in rows] == ["33-B", "61-B"]
-    assert all(row["property_row_status"] == "resolved" for row in rows)
+        assert enriched.document_category == "lease_contract"
+        assert [row["property_matrix_key"] for row in rows] == ["33-B", "61-B"]
+        assert all(row["property_row_status"] == "resolved" for row in rows)
+
+
+def test_property_table_scan_calls_main_pipeline_only_for_property_scan_leases() -> None:
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return
+
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        lease_path = root / "contract.pdf"
+        attachment_path = root / "IBAN.pdf"
+        lease_path.write_bytes(b"lease")
+        attachment_path.write_bytes(b"bank attachment")
+        lease_digest = hashlib.sha256(b"lease").hexdigest()
+        workbook_path = root / "register.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = PROPERTY_SHEET_NAME
+        sheet.append(PROPERTY_REGISTER_COLUMNS)
+        payload = {column: "" for column in PROPERTY_REGISTER_COLUMNS}
+        payload.update({"sha256": lease_digest, "document_type": "lease_contract"})
+        sheet.append([payload[column] for column in PROPERTY_REGISTER_COLUMNS])
+        workbook.save(workbook_path)
+        workbook.close()
+        now = datetime.now(timezone.utc)
+        candidate = PdfCandidate(lease_path, lease_path, lease_digest, now, now)
+        processor = DocumentProcessor(SimpleNamespace(
+            excel_path=workbook_path,
+            ensure_directories=lambda: None,
+        ))
+        processor._iter_pdf_files = lambda: [lease_path, attachment_path]  # type: ignore[method-assign]
+        processor._copy_candidate = MagicMock(return_value=candidate)  # type: ignore[method-assign]
+        processor._process_candidate = MagicMock()  # type: ignore[method-assign]
+
+        processed = processor.scan_once(property_table=True, reprocess_cadernetas=True)
+
+        assert processed == 1
+        processor._process_candidate.assert_called_once()
+        assert processor._copy_candidate.call_args.kwargs["digest"] == lease_digest
 
 
 def load_tests(loader, tests, pattern):

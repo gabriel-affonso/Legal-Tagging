@@ -8,6 +8,7 @@ migração automática.
 ## Execução
 
 ```bash
+PYTHONPATH=src python3 -m doc_register property-scan
 PYTHONPATH=src python3 -m doc_register scan --property-table
 PYTHONPATH=src python3 -m doc_register watch --property-table
 PYTHONPATH=src python3 -m doc_register scan --property-table --reprocess-cadernetas
@@ -17,9 +18,13 @@ PYTHONPATH=src python3 -m doc_register scan --property-table --reprocess-caderne
 esses comandos pertencem ao pipeline predial independente e já utilizam a
 sheet `Property Extraction`.
 
-Use `--reprocess-cadernetas` para uma reconstrução completa. Esse modo volta
-a percorrer todos os PDFs de entrada e substitui atomicamente todas as linhas
-de cada contrato. Sem essa flag, o modo é incremental.
+`property-scan` é obrigatório como etapa de elegibilidade antes de usar
+`--property-table`. A tabela só abre PDFs cujo SHA-256 já esteja classificado
+como `lease_contract` na sheet `Property Extraction`; não executa OCR, LLM ou
+o pipeline principal em anexos bancários, cadernetas isoladas ou outros PDFs.
+
+Use `--reprocess-cadernetas` para uma reconstrução completa dos contratos
+elegíveis. Sem essa flag, o modo é incremental.
 
 ## Elegibilidade e fontes
 
