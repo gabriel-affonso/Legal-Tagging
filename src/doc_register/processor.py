@@ -388,6 +388,10 @@ class DocumentProcessor:
             entity_resolution=False,
         )
         if property_table:
+            # The independent Property Extraction worksheet may already hold
+            # a multi-property result for this immutable PDF.  Materialize it
+            # instead of asking the main pipeline to rediscover those rows.
+            result = self.property_table_register.enrich_from_property_extraction(candidate, result)
             property_rows = self.property_table_register.upsert(candidate, result)
             LOGGER.info(
                 "Registered %s property row(s) for %s in Property Table.",

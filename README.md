@@ -37,7 +37,7 @@ O processamento é híbrido e conservador:
 20. A renda passa a suportar frequência e unidade. Renda anual por hectare preenche `rent_*` e `annual_rent`, sem inventar ou exigir `monthly_rent`.
 21. Step 3.3.3: o resolvedor de contratos é o único publicador final após fontes especializadas. O audit inclui candidatos rejeitados, decisão final, evidência de titularidade separada (`contract_lessors`, `declared_owners`, `cadastral_owners`) e conflitos preservados.
 22. A revisão por IA é segmentada em grupos de partes, imóvel e datas/termos; timeout num grupo não descarta decisões já aceites noutro grupo.
-23. Step 3.4: `scan --property-table` e `watch --property-table` escrevem na sheet `Property Table`, com uma linha por matriz e os campos contratuais comuns repetidos de forma controlada.
+23. Step 3.5.1: `scan --property-table` e `watch --property-table` escrevem na sheet `Property Table`, com uma linha por matriz de contratos de arrendamento; anexos bancários e documentos prediais isolados não criam linhas vazias. A tabela reutiliza a `Property Extraction` pelo SHA-256 quando disponível.
 24. Step 3.5: fallback visual local opcional com `qwen3-vl:4b-instruct` (família Qwen3-VL 4B). Depois de esgotar OCR, regras, LLM textual e o resolvedor contratual, analisa apenas as primeiras páginas de contratos com OCR fraco e campos críticos incertos. A imagem nunca sai da máquina nem é gravada em log.
 25. Step 3.5 começa em modo sombra: propostas visuais são auditadas, mas não alteram o registo. Mesmo quando a aplicação é explicitamente ativada, texto manuscrito, caracteres incertos e conflitos exigem revisão humana.
 26. Nova validação determinística; só o validator pode atribuir `AUTO_APPROVED`.

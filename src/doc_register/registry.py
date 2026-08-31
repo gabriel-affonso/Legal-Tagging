@@ -26,6 +26,9 @@ PROPERTY_TABLE_METADATA_COLUMNS = (
     "property_count",
     "property_row_status",
     "property_match_status",
+    "property_association_status",
+    "property_association_evidence",
+    "contract_operational_property_id",
     "property_source_pages",
     "property_structure_status",
     "property_owner_status",
@@ -255,6 +258,60 @@ class PropertyTableRegister:
             workbook.close()
             return values
 
+    def enrich_from_property_extraction(
+        self, candidate: PdfCandidate, result: ExtractionResult
+    ) -> ExtractionResult:
+        """Attach the independent Property Extraction result for this PDF.
+
+        The secondary pipeline is the richer property source for many legacy
+        contracts.  Reading it by immutable file hash keeps the main scan and
+        the materialized table aligned without using filenames as identities.
+        """
+        if not self.path.exists():
+            return result
+        with _workbook_lock(self.path):
+            try:
+                from openpyxl import load_workbook
+            except ImportError as exc:
+                raise RuntimeError("Missing dependency: install openpyxl with `pip install -r requirements.txt`.") from exc
+            workbook = load_workbook(self.path, read_only=True, data_only=True)
+            try:
+                if PROPERTY_SHEET_NAME not in workbook.sheetnames:
+                    return result
+                sheet = workbook[PROPERTY_SHEET_NAME]
+                headers = {
+                    str(cell.value): index
+                    for index, cell in enumerate(next(sheet.iter_rows(min_row=1, max_row=1, values_only=False)), start=1)
+                    if cell.value
+                }
+                required = {"sha256", "document_type", "status", "properties"}
+                if not required.issubset(headers):
+                    return result
+                for values in sheet.iter_rows(min_row=2, values_only=True):
+                    if str(values[headers["sha256"] - 1] or "") != candidate.sha256:
+                        continue
+                    document_type = str(values[headers["document_type"] - 1] or "").strip().lower()
+                    status = str(values[headers["status"] - 1] or "").strip()
+                    if document_type != "lease_contract" or status not in {"processed", "processed_multi_property", "needs_review"}:
+                        return result
+                    properties = _json_list(values[headers["properties"] - 1])
+                    if not properties:
+                        properties = [_property_extraction_single(values, headers)]
+                    raw = dict(result.raw_json) if isinstance(result.raw_json, dict) else {}
+                    raw["property_extraction"] = {
+                        "status": status,
+                        "properties": [item for item in properties if isinstance(item, dict)],
+                    }
+                    result.raw_json = raw
+                    # A completed independent lease decision is sufficient to
+                    # make a previously OCR-misclassified contract eligible;
+                    # non-lease rows are never promoted.
+                    result.document_category = "lease_contract"
+                    return result
+                return result
+            finally:
+                workbook.close()
+
     def upsert(self, candidate: PdfCandidate, result: ExtractionResult) -> int:
         """Atomically replace every property row belonging to one contract."""
         rows = build_property_table_rows(result)
@@ -276,7 +333,7 @@ class PropertyTableRegister:
             for property_row in rows:
                 payload = {**property_row, **operational}
                 payload["property_row_id"] = (
-                    f"{candidate.sha256}:{payload.get('property_row_id') or 'unresolved'}"
+                    f"{candidate.sha256}::{payload.get('property_row_id') or 'unresolved'}"
                 )
                 sheet.append([
                     _excel_value(payload.get(column, ""))
@@ -329,6 +386,9 @@ class PropertyTableRegister:
             "property_count": 14,
             "property_row_status": 24,
             "property_match_status": 30,
+            "property_association_status": 24,
+            "property_association_evidence": 48,
+            "contract_operational_property_id": 28,
             "property_source_pages": 22,
             "property_structure_status": 24,
             "property_owner_status": 24,
@@ -508,6 +568,37 @@ class PropertyExcelRegister:
 
 def _excel_value(value: object) -> object:
     return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+
+
+def _json_list(value: object) -> list[dict[str, object]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def _property_extraction_single(
+    values: tuple[object, ...], headers: dict[str, int]
+) -> dict[str, object]:
+    """Convert a legacy single-property Property Extraction row to a list item."""
+    def value(name: str) -> object:
+        index = headers.get(name)
+        return values[index - 1] if index and index <= len(values) else ""
+
+    return {
+        "property_name": value("property_name"),
+        "matrix_article": value("matrix_article"),
+        "matrix_section": value("matrix_section"),
+        "property_matrix_key": value("property_matrix_key"),
+        "area_m2": value("area_m2"),
+        "owner_name": value("owner_name"),
+        "source_file": value("source_file_name"),
+    }
 
 
 def _ensure_named_headers(sheet, columns: tuple[str, ...]) -> bool:

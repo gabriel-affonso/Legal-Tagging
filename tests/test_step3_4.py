@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+import json
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -11,6 +12,8 @@ from doc_register.models import ExtractionResult, PdfCandidate
 from doc_register.property_table import build_property_table_rows
 from doc_register.registry import (
     PROPERTY_TABLE_COLUMNS,
+    PROPERTY_REGISTER_COLUMNS,
+    PROPERTY_SHEET_NAME,
     PROPERTY_TABLE_SHEET_NAME,
     PropertyTableRegister,
 )
@@ -119,6 +122,60 @@ def test_missing_property_creates_one_explicit_unresolved_audit_row() -> None:
     assert rows[0]["needs_review"] == "yes"
 
 
+def test_non_contract_attachments_do_not_create_property_table_rows() -> None:
+    bank_attachment = ExtractionResult(
+        document_category="bank_details",
+        property_article="140",
+        property_section="J",
+    )
+
+    assert build_property_table_rows(bank_attachment) == []
+
+
+def test_property_extraction_is_reused_before_lower_priority_main_sources() -> None:
+    result = _result([
+        {**_properties()[0], "matrix_key": "999-Z", "property_article": "999", "property_section": "Z"}
+    ])
+    result.raw_json["property_extraction"] = {
+        "properties": [
+            {**_properties()[0], "matrix_key": "33-B", "property_article": "33", "property_section": "B", "matrix_article": "33", "matrix_section": "B"},
+            {**_properties()[1], "matrix_key": "61-B", "property_article": "61", "property_section": "B", "matrix_article": "61", "matrix_section": "B"},
+        ]
+    }
+
+    rows = build_property_table_rows(result)
+
+    assert [row["property_matrix_key"] for row in rows] == ["33-B", "61-B"]
+
+
+def test_duplicate_matrix_groups_merge_pages_and_keep_the_complete_values() -> None:
+    duplicate = {
+        "matrix_key": "4-L",
+        "property_article": "4",
+        "property_section": "L",
+        "pages": [21],
+        "matched_contract_identity": True,
+    }
+    rows = build_property_table_rows(_result([_properties()[0], duplicate]))
+
+    assert len(rows) == 1
+    assert rows[0]["property_name"] == "Serra da Abelha"
+    assert rows[0]["property_source_pages"] == "17; 18; 21"
+
+
+def test_invalid_generic_property_name_is_not_published_as_a_fact() -> None:
+    properties = [{
+        **_properties()[0],
+        "property_name": "Encargos potenciais sobre o prédio",
+    }]
+
+    row = build_property_table_rows(_result(properties))[0]
+
+    assert row["property_name"] == ""
+    assert row["needs_review"] == "yes"
+    assert "property_name_invalid_or_missing" in row["review_reason"]
+
+
 def test_property_table_cli_flag_is_available_for_main_scan() -> None:
     args = _build_parser().parse_args(["scan", "--property-table"])
     assert args.command == "scan"
@@ -189,9 +246,48 @@ def test_property_table_upsert_replaces_all_rows_for_contract() -> None:
         assert headers == list(PROPERTY_TABLE_COLUMNS)
         assert sheet.max_row == 2
         assert sheet.cell(2, headers.index("property_matrix_key") + 1).value == "29-F"
+        assert sheet.cell(2, headers.index("property_row_id") + 1).value == f"{'a' * 64}::29-F"
         assert sheet.cell(2, headers.index("property_total_area_m2") + 1).value == 488811
         assert sheet.tables["PropertyTable"].ref.endswith("2")
         workbook.close()
+
+
+def test_register_enriches_main_result_with_independent_property_extraction() -> None:
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return
+
+    with TemporaryDirectory() as directory:
+        workbook_path = Path(directory) / "register.xlsx"
+        digest = "b" * 64
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = PROPERTY_SHEET_NAME
+        sheet.append(PROPERTY_REGISTER_COLUMNS)
+        payload = {column: "" for column in PROPERTY_REGISTER_COLUMNS}
+        payload.update({
+            "sha256": digest,
+            "document_type": "lease_contract",
+            "status": "processed_multi_property",
+            "properties": json.dumps([
+                {**_properties()[0], "matrix_key": "33-B", "property_article": "33", "property_section": "B", "matrix_article": "33", "matrix_section": "B"},
+                {**_properties()[1], "matrix_key": "61-B", "property_article": "61", "property_section": "B", "matrix_article": "61", "matrix_section": "B"},
+            ]),
+        })
+        sheet.append([payload[column] for column in PROPERTY_REGISTER_COLUMNS])
+        workbook.save(workbook_path)
+        workbook.close()
+        now = datetime.now(timezone.utc)
+        candidate = PdfCandidate(Path("PR100_CA.pdf"), Path("PR100_CA.pdf"), digest, now, now)
+        main_result = ExtractionResult(document_category="other")
+
+        enriched = PropertyTableRegister(workbook_path).enrich_from_property_extraction(candidate, main_result)
+        rows = build_property_table_rows(enriched)
+
+    assert enriched.document_category == "lease_contract"
+    assert [row["property_matrix_key"] for row in rows] == ["33-B", "61-B"]
+    assert all(row["property_row_status"] == "resolved" for row in rows)
 
 
 def load_tests(loader, tests, pattern):

@@ -1,8 +1,9 @@
-# Step 3.4 — Property Table
+# Step 3.5.1 — Property Table robusta
 
-O Step 3.4 adiciona uma visão normalizada do registo: uma linha por
-propriedade, numa sheet separada chamada `Property Table`. O modo existente
-por contrato permanece como default e não sofre migração automática.
+O modo `--property-table` cria uma projeção normalizada: uma linha por
+propriedade de cada contrato de arrendamento, na sheet separada `Property
+Table`. O modo existente por contrato permanece como default e não sofre
+migração automática.
 
 ## Execução
 
@@ -15,6 +16,26 @@ PYTHONPATH=src python3 -m doc_register scan --property-table --reprocess-caderne
 `--property-table` não se aplica a `property-scan` ou `property-watch`, pois
 esses comandos pertencem ao pipeline predial independente e já utilizam a
 sheet `Property Extraction`.
+
+Use `--reprocess-cadernetas` para uma reconstrução completa. Esse modo volta
+a percorrer todos os PDFs de entrada e substitui atomicamente todas as linhas
+de cada contrato. Sem essa flag, o modo é incremental.
+
+## Elegibilidade e fontes
+
+Só contratos classificados como `lease_contract` podem publicar linhas na
+Property Table. `bank_details`, comprovativos, faturas, identificações e
+documentos prediais isolados não recebem uma linha `unresolved_no_property`.
+Eles podem continuar no Document Register e na Property Extraction, mas não
+representam uma propriedade arrendada por si só.
+
+Antes de publicar, o scan procura pelo mesmo SHA-256 na sheet `Property
+Extraction`. Quando existe uma decisão de contrato nessa pipeline, as suas
+propriedades estruturadas são reutilizadas, incluindo `processed_multi_property`.
+As restantes fontes são consideradas por esta ordem: resolução final
+estruturada, extração predial independente, resultado field-centric,
+cadernetas internas, property pack e, por último, os campos escalares do
+contrato. Assim, o writer não tenta resolver novamente um imóvel já auditado.
 
 ## Granularidade
 
@@ -51,20 +72,27 @@ foi reconhecida; nesse caso recebem:
 - `human_review_required = yes`;
 - `review_reason = property_contract_identity_unconfirmed`.
 
-Quando nenhuma propriedade estruturada é encontrada, é criada uma única
-linha de controlo com `property_row_status = unresolved_no_property`. Isso
-impede reprocessamentos infinitos e torna a falha visível sem inventar uma
-matriz.
+Quando nenhuma propriedade estruturada é encontrada para um contrato, é
+criada uma única linha de controlo com
+`property_row_status = unresolved_no_property`. Isso torna a falha visível
+sem inventar uma matriz.
+
+Chaves matriciais só são publicadas quando têm artigo numérico e secção de uma
+letra. Grupos repetidos com a mesma chave são unidos, preservando páginas e
+preferindo os valores mais completos. Nomes prediais genéricos ou jurídicos
+não são publicados como facto: são limpos e a linha segue para revisão.
 
 ## Idempotência
 
-`property_row_id` combina o SHA-256 do contrato com a chave matricial. Cada
+`property_row_id` combina `SHA-256::chave_matricial`. Cada
 escrita remove primeiro todas as linhas do mesmo SHA-256 e grava o conjunto
 atual numa única operação protegida pelo lock do workbook. Reprocessar um
 contrato não duplica linhas e também remove propriedades que deixaram de ser
 suportadas pela nova execução.
 
-O `raw_json` de cada linha recebe `step3_4_property_table`, com versão,
+Cada linha mantém tanto `contract_operational_property_id` (por exemplo,
+`PR098`) como `property_matrix_key` (por exemplo, `140-J`), sem os confundir.
+O `raw_json` de cada linha recebe `step3_5_property_table`, com versão,
 posição, total de propriedades, chave matricial, estado de correspondência e
 páginas de origem. `property_json` contém apenas a propriedade daquela linha.
 
