@@ -236,8 +236,7 @@ class ExcelRegister:
 
         if sheet.tables:
             table = next(iter(sheet.tables.values()))
-            last_column = _column_letter(len(REGISTER_COLUMNS))
-            table.ref = f"A1:{last_column}{max(sheet.max_row, 1)}"
+            _set_table_ref(sheet, table, len(REGISTER_COLUMNS))
 
 
 class PropertyTableRegister:
@@ -519,7 +518,7 @@ class PropertyTableRegister:
             sheet.cell(row=row_index, column=area_column).number_format = '#,##0.00'
         if sheet.tables:
             table = next(iter(sheet.tables.values()))
-            table.ref = f"A1:{_column_letter(len(PROPERTY_TABLE_COLUMNS))}{max(sheet.max_row, 1)}"
+            _set_table_ref(sheet, table, len(PROPERTY_TABLE_COLUMNS))
 
 
 def _ensure_headers(sheet) -> bool:
@@ -663,7 +662,7 @@ class PropertyExcelRegister:
                 sheet.column_dimensions[_column_letter(index)].width = widths[header]
         if sheet.tables:
             table = next(iter(sheet.tables.values()))
-            table.ref = f"A1:{_column_letter(len(PROPERTY_REGISTER_COLUMNS))}{max(sheet.max_row, 1)}"
+            _set_table_ref(sheet, table, len(PROPERTY_REGISTER_COLUMNS))
 
 
 def _excel_value(value: object) -> object:
@@ -847,9 +846,11 @@ def _ensure_property_headers(sheet) -> bool:
 
 
 def _add_table(sheet, name: str, column_count: int) -> None:
+    from openpyxl.worksheet.filters import AutoFilter
     from openpyxl.worksheet.table import Table, TableStyleInfo
 
     table = Table(displayName=name, ref=f"A1:{_column_letter(column_count)}1")
+    table.autoFilter = AutoFilter(ref=table.ref)
     table.tableStyleInfo = TableStyleInfo(
         name="TableStyleMedium2",
         showFirstColumn=False,
@@ -858,6 +859,19 @@ def _add_table(sheet, name: str, column_count: int) -> None:
         showColumnStripes=False,
     )
     sheet.add_table(table)
+
+
+def _set_table_ref(sheet, table, column_count: int) -> None:
+    """Keep the table and its serialized AutoFilter range in lockstep.
+
+    ``openpyxl`` does not update ``table.autoFilter.ref`` when ``table.ref``
+    changes. Excel repairs a workbook when those ranges diverge, sometimes by
+    deleting the complete table. Every append, replacement and rebuild uses
+    this helper after changing a sheet's rows.
+    """
+    table.ref = f"A1:{_column_letter(column_count)}{max(sheet.max_row, 1)}"
+    if table.autoFilter is not None:
+        table.autoFilter.ref = table.ref
 
 
 @contextmanager

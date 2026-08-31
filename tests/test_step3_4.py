@@ -19,6 +19,7 @@ from doc_register.registry import (
     PROPERTY_SHEET_NAME,
     PROPERTY_TABLE_SHEET_NAME,
     PropertyTableRegister,
+    _set_table_ref,
 )
 from doc_register.step33_engine import prepare_field_centric_extraction
 
@@ -133,6 +134,16 @@ def test_non_contract_attachments_do_not_create_property_table_rows() -> None:
     )
 
     assert build_property_table_rows(bank_attachment) == []
+
+
+def test_table_ref_and_autofilter_are_synchronized_after_a_write() -> None:
+    sheet = SimpleNamespace(max_row=7)
+    table = SimpleNamespace(ref="A1:B1", autoFilter=SimpleNamespace(ref="A1:B1"))
+
+    _set_table_ref(sheet, table, 3)
+
+    assert table.ref == "A1:C7"
+    assert table.autoFilter.ref == "A1:C7"
 
 
 def test_property_extraction_is_reused_before_lower_priority_main_sources() -> None:
