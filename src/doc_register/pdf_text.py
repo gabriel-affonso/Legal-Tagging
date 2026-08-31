@@ -134,7 +134,12 @@ def extract_pdf_caderneta_text(
 def extract_pdf_layout_text(path: Path, max_pages: int, max_chars: int) -> str:
     """Extract text with page/block/line structure when PyMuPDF is available."""
     try:
-        import fitz  # type: ignore[import-not-found]
+        # PyMuPDF renamed its import module.  Prefer the supported name while
+        # retaining compatibility with environments that still expose fitz.
+        try:
+            import pymupdf as fitz  # type: ignore[import-not-found]
+        except ImportError:
+            import fitz  # type: ignore[import-not-found]
     except ImportError as exc:
         raise RuntimeError("PyMuPDF is not installed; layout extraction unavailable.") from exc
 

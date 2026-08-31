@@ -22,7 +22,7 @@ from .property_intelligence import (
     recover_from_annexes,
     recovery_required,
 )
-from .property_pack import PropertyPackDiscovery, PropertyPackMatch
+from .property_pack import PropertyPackDiscovery, PropertyPackMatch, is_definite_non_property_filename
 from .property_pipeline import PropertyExtractionPipeline
 from .registry import PropertyExcelRegister
 
@@ -49,6 +49,9 @@ class PropertyExtractionProcessor:
         pack_discovery.build_catalog()
         processed = 0
         for path in pdf_files:
+            if is_definite_non_property_filename(path.name):
+                LOGGER.info("Property scan skipped non-property attachment: %s", path.name)
+                continue
             digest = _sha256(path)
             if digest in existing_hashes:
                 continue

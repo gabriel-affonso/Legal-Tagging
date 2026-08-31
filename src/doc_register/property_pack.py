@@ -280,6 +280,13 @@ class PropertyPackDiscovery:
         full_native = extract_pdf_caderneta_text(path)
         if discover_caderneta_groups(full_native):
             return full_native, "native_pdf_full"
+        # Property extraction is allowed to catalogue every cadastral PDF, but
+        # known non-property attachments must not trigger OCR just because
+        # their native text is short (e.g. IBAN proofs in the same folder).
+        if is_definite_non_property_filename(path.name):
+            return full_native, "native_pdf_non_property"
+        if not _is_property_candidate_name(path.name) and not _has_property_markers(full_native):
+            return full_native, "native_pdf_not_property_candidate"
         extracted = extract_text_with_optional_ocr(
             path,
             max_pages=self._config.max_pdf_pages,
@@ -383,6 +390,29 @@ def _is_strong_identifier(value: str) -> bool:
     return bool(re.fullmatch(r"(?:VA|PR|TO)\d{1,6}[A-Z]?", value))
 
 
+def is_definite_non_property_filename(name: str) -> bool:
+    normalized = _fold(name)
+    return bool(re.search(
+        r"\b(?:IBAN|NIB|PAGAMENTO|COMPROVATIVO|FATURA|FACTURA|RECIBO|TRANSFERENCIA|TRANSFERENCIA)\b",
+        normalized,
+        re.IGNORECASE,
+    ))
+
+
+def _is_property_candidate_name(name: str) -> bool:
+    normalized = _fold(name)
+    return bool(re.search(r"caderneta|predial|crp|certidao|matriz|registo", normalized, re.I))
+
+
+def _has_property_markers(text: str) -> bool:
+    normalized = _fold(text)
+    return bool(re.search(
+        r"\bcaderneta\s+predial|\bartigo\s+matricial|\bsec[cç][aã]o\b|\bidentificacao\s+do\s+predio\b",
+        normalized,
+        re.I,
+    ))
+
+
 def _filename_evidence(file_name: str) -> tuple[set[str], tuple[int | float, ...]]:
     """Keep business identifiers and area hints separate from cadastral fields."""
     normalized = re.sub(r"[_\-]", " ", file_name.upper())
@@ -424,4 +454,7 @@ def _fold(value: str) -> str:
     )
 
 
-__all__ = ["PropertyDocumentDescriptor", "PropertyPackDiscovery", "PropertyPackMatch"]
+__all__ = [
+    "PropertyDocumentDescriptor", "PropertyPackDiscovery", "PropertyPackMatch",
+    "is_definite_non_property_filename",
+]
