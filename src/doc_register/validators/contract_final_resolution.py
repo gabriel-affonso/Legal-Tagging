@@ -111,6 +111,9 @@ class ContractResolutionReport:
     conflicts: list[dict[str, object]] = field(default_factory=list)
     cadastral_evidence: list[dict[str, object]] = field(default_factory=list)
     unresolved_fields: list[str] = field(default_factory=list)
+    focused_core: bool = False
+    focused_visual_pages: tuple[int, ...] = ()
+    focused_visual_reasons: tuple[str, ...] = ()
     started_at: float = field(default_factory=time.monotonic)
 
     def context_for_llm(self, *, max_chars: int) -> str:
@@ -142,6 +145,9 @@ class ContractResolutionReport:
     def to_dict(self) -> dict[str, object]:
         return {
             "version": "3.6", "active": self.active,
+            "focused_core": self.focused_core,
+            "focused_visual_pages": list(self.focused_visual_pages),
+            "focused_visual_reasons": list(self.focused_visual_reasons),
             "document_zones": [item.to_dict() for item in self.zones],
             "page_quality_summary": [item.to_dict() for item in self.page_quality],
             "entities": list(self.entities.values()),
@@ -231,7 +237,7 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
             "reason": "annual_or_non_monthly_rent_extracted",
             "requires_review": False,
         }
-    if report.conflicts:
+    if report.conflicts and not report.focused_core:
         result.human_review_required = "yes"
         conflict_reasons = "; ".join(
             str(item.get("type")) for item in report.conflicts if item.get("type")

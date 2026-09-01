@@ -20,7 +20,34 @@ def build_vision_plan(
     if not _is_contract_candidate(result, signals):
         return VisionPlan(False, "not_contract_candidate")
 
+    focused_pages = tuple(
+        int(page)
+        for page in (getattr(final_resolution_report, "focused_visual_pages", ()) or ())
+        if int(page) > 0
+    )
     fields = _uncertain_critical_fields(result, final_resolution_report, config)
+    if bool(getattr(config, "step_3_7_enabled", False)) and focused_pages:
+        if not fields:
+            # The page itself still needs confirmation even when contract-side
+            # values are complete. These two fields provide a short, useful
+            # cadastral read without widening the visual request.
+            fields = ["property_article", "property_section"]
+        reasons = tuple(
+            str(reason)
+            for reason in (
+                getattr(final_resolution_report, "focused_visual_reasons", ()) or ()
+            )
+        ) or ("focused_cadastral_confirmation",)
+        pages = tuple(
+            VisionPagePlan(page_number, reasons) for page_number in focused_pages
+        )
+        return VisionPlan(
+            True,
+            "step3_7_cadastral_confirmation",
+            tuple(fields),
+            pages,
+        )
+
     if not fields:
         return VisionPlan(False, "critical_points_confident")
 

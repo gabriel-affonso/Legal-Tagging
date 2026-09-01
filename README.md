@@ -491,6 +491,16 @@ visíveis em `evidence_conflicts`. Consulte [docs/step3.6.md](docs/step3.6.md)
 e use `python -m doc_register --vision-recall-last 10 --config config.json`
 para revalidar, de forma seletiva, os últimos documentos registados.
 
+### Step 3.7 — extração focada dos dados centrais
+
+Use `doc-register scan --step 3.7 --config config.json` para enviar ao Ollama
+somente as páginas físicas 1–3 do contrato e a primeira página posterior
+validada como conteúdo útil de caderneta predial. Para reprocessar em lugar os
+últimos registos, use `doc-register --step 3.7 --last 10 --config config.json`.
+O modo mantém o grafo de evidências do Step 3.6, separa senhorio de titular
+cadastral, limita Vision Recall às melhores candidatas e grava a auditoria em
+`raw_json["step3_7"]`. Veja [docs/step3.7.md](docs/step3.7.md).
+
 - PDFs digitais normalmente nao precisam de OCR. PDFs escaneados como imagem passam pelo `ocrmypdf` quando `ocr_enabled` estiver ativo.
 - O Power Automate pode continuar fazendo o filtro de PDFs adicionados na última hora. Localmente, este programa também evita duplicados por hash.
 - Para instrumentos contratuais, o schema pede signatários, partes contratuais quando aplicável, datas, imóvel e valores específicos. `monthly_rent` só é obrigatório para contrato de arrendamento; CPCV usa `purchase_price`, opção de compra usa `option_price`, e cedência/cessão de posição contratual usa `assignment_price`.

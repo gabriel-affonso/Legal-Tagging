@@ -23,6 +23,7 @@ from .step33_engine import (
     apply_field_centric_extraction,
     prepare_field_centric_extraction,
 )
+from .step37 import Step37Report, apply_step37_resolution, prepare_step37
 from .validators.contract_clause_integration import apply_contract_clause_segmentation
 from .validators.party_centric import (
     apply_party_centric_contract_extraction,
@@ -129,6 +130,20 @@ class DocumentProcessor:
                 LOGGER.exception("Vision Recall failed for %s", candidate.copied_path)
         return processed
 
+    def focused_extraction_last(self, limit: int) -> int:
+        """Reprocess recent register rows in place with the Step 3.7 context."""
+        processed = 0
+        for candidate in self.register.recent_candidates(limit):
+            try:
+                LOGGER.info("Step 3.7 focused extraction for %s", candidate.copied_path.name)
+                self._process_candidate(candidate, replace_existing=True)
+                processed += 1
+            except OllamaConnectionError:
+                raise
+            except Exception:
+                LOGGER.exception("Step 3.7 failed for %s", candidate.copied_path)
+        return processed
+
     def _iter_pdf_files(self) -> list[Path]:
         cutoff = None
         if self.config.copy_only_recent_minutes > 0:
@@ -205,54 +220,122 @@ class DocumentProcessor:
             LOGGER.warning("%s: %s", candidate.copied_path.name, extracted_text.notes)
 
         document_text = _normalize_document_text(extracted_text.text)
-        # Search every PDF for a native/cached-OCR caderneta before deciding
-        # whether the primary pipeline should treat it as a lease annex.
-        caderneta_text, caderneta_source = _read_internal_caderneta_text(
-            candidate.copied_path,
-            self.config,
-            allow_ocr=False,
-        )
-        caderneta_found = bool(discover_caderneta_groups(caderneta_text))
-        if caderneta_found:
-            document_text = _append_internal_caderneta_text(document_text, caderneta_text)
-        signals = detect_signals(candidate.source_path.name, document_text)
-        if signals.suggested_category == "lease_contract" and not caderneta_found:
+        focused_report: Step37Report | None = None
+        caderneta_text = ""
+        caderneta_source = ""
+        if self.config.step_3_7_enabled:
+            # A cheap all-page text scan is allowed, but none of this broad
+            # search region is sent to the language model.  OCR is generated
+            # only when neither native nor cached text finds cadastral data.
             caderneta_text, caderneta_source = _read_internal_caderneta_text(
                 candidate.copied_path,
                 self.config,
                 allow_ocr=True,
             )
+            focused_report = prepare_step37(
+                candidate.copied_path,
+                file_name=candidate.source_path.name,
+                config=self.config,
+            )
+            cached_ocr = self.config.ocr_dir / f"{candidate.copied_path.stem}__ocr.pdf"
+            if (
+                focused_report.cadastral_page is None
+                and self.config.ocr_enabled
+                and not cached_ocr.is_file()
+            ):
+                try:
+                    run_ocrmypdf(
+                        candidate.copied_path,
+                        cached_ocr,
+                        language=self.config.ocr_language,
+                        timeout_seconds=self.config.ocr_timeout_seconds,
+                    )
+                    if cached_ocr.is_file():
+                        caderneta_source = "generated_ocr_pdf"
+                        focused_report = prepare_step37(
+                            candidate.copied_path,
+                            file_name=candidate.source_path.name,
+                            config=self.config,
+                        )
+                except (FileNotFoundError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                    LOGGER.warning(
+                        "Step 3.7 OCR fallback failed for %s: %s",
+                        candidate.copied_path.name,
+                        exc,
+                    )
+            document_text = focused_report.document_text
+            caderneta_found = focused_report.cadastral_page is not None
+            signals = detect_signals(candidate.source_path.name, document_text)
+            LOGGER.info(
+                "Step 3.7 selected physical pages for %s: pages=%s cadastral=%s "
+                "context_chars=%s source=%s",
+                candidate.copied_path.name,
+                focused_report.selected_page_numbers,
+                focused_report.cadastral_page,
+                len(focused_report.context),
+                caderneta_source,
+            )
+        else:
+            # Search every PDF for a native/cached-OCR caderneta before deciding
+            # whether the primary pipeline should treat it as a lease annex.
+            caderneta_text, caderneta_source = _read_internal_caderneta_text(
+                candidate.copied_path,
+                self.config,
+                allow_ocr=False,
+            )
             caderneta_found = bool(discover_caderneta_groups(caderneta_text))
             if caderneta_found:
                 document_text = _append_internal_caderneta_text(document_text, caderneta_text)
-                signals = detect_signals(candidate.source_path.name, document_text)
-        if caderneta_found:
-            LOGGER.info(
-                "Added internal caderneta search region for %s: chars=%s source=%s",
-                candidate.copied_path.name,
-                len(caderneta_text),
-                caderneta_source,
-            )
+            signals = detect_signals(candidate.source_path.name, document_text)
+            if signals.suggested_category == "lease_contract" and not caderneta_found:
+                caderneta_text, caderneta_source = _read_internal_caderneta_text(
+                    candidate.copied_path,
+                    self.config,
+                    allow_ocr=True,
+                )
+                caderneta_found = bool(discover_caderneta_groups(caderneta_text))
+                if caderneta_found:
+                    document_text = _append_internal_caderneta_text(document_text, caderneta_text)
+                    signals = detect_signals(candidate.source_path.name, document_text)
+            if caderneta_found:
+                LOGGER.info(
+                    "Added internal caderneta search region for %s: chars=%s source=%s",
+                    candidate.copied_path.name,
+                    len(caderneta_text),
+                    caderneta_source,
+                )
         # Step 2.7 runs before the LLM extraction.  For lease candidates the
         # second prompt receives only field-authorized clauses, never a broad
         # document-wide semantic sample.
         party_centric_report = prepare_party_centric_contract(document_text)
         final_resolution_report = prepare_contract_final_resolution(document_text)
+        if focused_report is not None:
+            final_resolution_report.focused_core = True
+            final_resolution_report.focused_visual_pages = tuple(
+                focused_report.visual_candidate_pages
+            )
+            final_resolution_report.focused_visual_reasons = tuple(
+                focused_report.visual_confirmation_reasons
+            )
         step33_report = prepare_field_centric_extraction(document_text)
 
         classification_text = select_classification_text(
             document_text,
             fallback_words=self.config.llm_classification_words,
         )
-        highlighted_text = step33_report.context_for_llm(
-            max_chars=self.config.llm_extraction_max_chars,
-        ) or final_resolution_report.context_for_llm(
-            max_chars=self.config.llm_extraction_max_chars,
-        ) or party_centric_report.context_for_llm(
-            max_chars=self.config.llm_extraction_max_chars,
-        ) or _build_extraction_context(
-            document_text,
-            max_chars=self.config.llm_extraction_max_chars,
+        highlighted_text = (
+            focused_report.context
+            if focused_report is not None
+            else step33_report.context_for_llm(
+                max_chars=self.config.llm_extraction_max_chars,
+            ) or final_resolution_report.context_for_llm(
+                max_chars=self.config.llm_extraction_max_chars,
+            ) or party_centric_report.context_for_llm(
+                max_chars=self.config.llm_extraction_max_chars,
+            ) or _build_extraction_context(
+                document_text,
+                max_chars=self.config.llm_extraction_max_chars,
+            )
         )
 
         LOGGER.info(
@@ -325,13 +408,25 @@ class DocumentProcessor:
             max_clause_text_chars=self.config.contract_clause_segmentation_max_clause_chars,
         )
 
-        result = recover_validate_result(
-            result,
-            config=self.config,
-            file_name=candidate.source_path.name,
-            signals=signals,
-            document_text=document_text,
-        )
+        if focused_report is not None:
+            # Step 3.7 has a strict two-call model budget.  Validation remains
+            # deterministic here; critical-recovery AI would be a third call.
+            result = validate_result(
+                result,
+                signals,
+                document_text,
+                file_name=candidate.source_path.name,
+                recover=True,
+                recovery_ai_enabled=False,
+            )
+        else:
+            result = recover_validate_result(
+                result,
+                config=self.config,
+                file_name=candidate.source_path.name,
+                signals=signals,
+                document_text=document_text,
+            )
         result = apply_party_centric_contract_extraction(
             result,
             party_centric_report,
@@ -346,22 +441,26 @@ class DocumentProcessor:
             recover=False,
             entity_resolution=False,
         )
-        result = review_if_needed(
-            result,
-            config=self.config,
-            file_name=candidate.source_path.name,
-            document_text=(
-                final_resolution_report.context_for_llm(
-                    max_chars=self.config.ai_review_max_evidence_chars,
-                )
-                if final_resolution_report.active
-                else party_centric_report.context_for_llm(
-                    max_chars=self.config.ai_review_max_evidence_chars,
-                )
-                if party_centric_report.active
-                else document_text
-            ),
-        )
+        if focused_report is not None:
+            result.ai_review_status = "NOT_REQUIRED"
+            result.ai_review_reason = "step3_7_two_call_budget"
+        else:
+            result = review_if_needed(
+                result,
+                config=self.config,
+                file_name=candidate.source_path.name,
+                document_text=(
+                    final_resolution_report.context_for_llm(
+                        max_chars=self.config.ai_review_max_evidence_chars,
+                    )
+                    if final_resolution_report.active
+                    else party_centric_report.context_for_llm(
+                        max_chars=self.config.ai_review_max_evidence_chars,
+                    )
+                    if party_centric_report.active
+                    else document_text
+                ),
+            )
         # Reviewer proposals remain subject to the same clause-origin gate.
         result = apply_party_centric_contract_extraction(
             result,
@@ -410,6 +509,8 @@ class DocumentProcessor:
             # allow a later sanitiser to overwrite its selected candidates.
             entity_resolution=False,
         )
+        if focused_report is not None:
+            result = apply_step37_resolution(result, focused_report)
         if property_table:
             # The independent Property Extraction worksheet may already hold
             # a multi-property result for this immutable PDF.  Materialize it

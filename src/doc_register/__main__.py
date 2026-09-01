@@ -45,6 +45,28 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config.json", help="Path to configuration JSON.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument(
+        "--step",
+        choices=["3.6", "3.7"],
+        help="Select the compatible pipeline step. Step 3.7 enables focused core extraction.",
+    )
+    parser.add_argument(
+        "--focused-core-extraction",
+        action="store_true",
+        help="Alias for --step 3.7: use contract pages 1-3 plus the first valid caderneta page.",
+    )
+    parser.add_argument(
+        "--last",
+        type=int,
+        metavar="N",
+        help="With Step 3.7, reprocess the last N registered PDFs in place.",
+    )
+    parser.add_argument(
+        "--focused-core-extraction-last",
+        type=int,
+        metavar="N",
+        help="Reprocess the last N registered PDFs with focused core extraction.",
+    )
+    parser.add_argument(
         "--reprocess-cadernetas",
         action="store_true",
         help="Reprocess existing main-register PDFs and replace their rows to apply internal caderneta extraction.",
@@ -79,12 +101,33 @@ def main() -> None:
         parser.error("--property-table is available only with scan or watch")
     if args.vision_recall_last is not None and args.vision_recall_last <= 0:
         parser.error("--vision-recall-last must be greater than zero")
+    if args.last is not None and args.last <= 0:
+        parser.error("--last must be greater than zero")
+    if args.focused_core_extraction_last is not None and args.focused_core_extraction_last <= 0:
+        parser.error("--focused-core-extraction-last must be greater than zero")
+    focused = bool(
+        args.step == "3.7"
+        or args.focused_core_extraction
+        or args.focused_core_extraction_last is not None
+    )
+    if args.step == "3.6" and focused:
+        parser.error("--step 3.6 cannot be combined with Step 3.7 flags")
+    if args.last is not None and not focused:
+        parser.error("--last is available only with --step 3.7 or --focused-core-extraction")
+    if args.last is not None and args.focused_core_extraction_last is not None:
+        parser.error("Use either --last or --focused-core-extraction-last, not both")
+    if focused and args.command in {"property-scan", "property-watch"}:
+        parser.error("Step 3.7 is available only with scan or watch")
 
     config = AppConfig.from_json(Path(args.config).expanduser().resolve())
     _configure_logging(config.log_dir, args.log_level)
     config.ensure_directories()
     if args.vision_recall or args.vision_recall_last is not None:
         config = replace(config, vision_enabled=True, vision_recall_mode=True)
+    if focused:
+        config = replace(config, step_3_7_enabled=True)
+    elif args.step == "3.6":
+        config = replace(config, step_3_7_enabled=False)
     if args.vision_recall_last is not None:
         processor = DocumentProcessor(config)
         processed = processor.vision_recall_last(args.vision_recall_last)
@@ -108,6 +151,12 @@ def main() -> None:
             time.sleep(config.poll_interval_seconds)
 
     processor = DocumentProcessor(config)
+
+    focused_last = args.focused_core_extraction_last or args.last
+    if focused_last is not None:
+        processed = processor.focused_extraction_last(focused_last)
+        logging.info("Step 3.7 complete. Reprocessed %s registered PDF(s).", processed)
+        return
 
     if args.command == "scan":
         processed = processor.scan_once(

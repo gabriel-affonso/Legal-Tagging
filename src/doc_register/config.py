@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import json
 
@@ -59,6 +59,19 @@ class AppConfig:
     vision_recall_mode: bool = False
     vision_recall_first_pages: int = 5
     vision_recall_last_pages: int = 3
+    # Step 3.7: focused evidence extraction.  It is opt-in so every existing
+    # Step 3.6 command keeps its current behaviour.
+    step_3_7_enabled: bool = False
+    step_3_7_maximum_contract_pages: int = 3
+    step_3_7_maximum_cadastral_pages: int = 1
+    step_3_7_maximum_total_pages: int = 4
+    step_3_7_maximum_chars_per_page: int = 12_000
+    step_3_7_maximum_total_context_chars: int = 40_000
+    step_3_7_cadastral_page_threshold: int = 7
+    step_3_7_cadastral_min_indicator_diversity: int = 2
+    step_3_7_cadastral_ocr_quality_threshold: float = 0.60
+    step_3_7_maximum_cadastral_visual_candidates: int = 3
+    step_3_7_cadastral_indicator_scores: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, path: Path) -> "AppConfig":
@@ -66,6 +79,14 @@ class AppConfig:
             raw = json.load(handle)
 
         base = path.parent
+        step_3_7 = raw.get("step_3_7", {})
+        if not isinstance(step_3_7, dict):
+            raise ValueError("config.json: step_3_7 must be a JSON object")
+
+        def step37_value(key: str, default: object) -> object:
+            # Flat keys are accepted for deployments that cannot yet emit a
+            # nested object, but the documented shape remains ``step_3_7``.
+            return raw.get(f"step_3_7_{key}", step_3_7.get(key, default))
 
         def as_path(key: str, default: str | None = None) -> Path:
             raw_value = raw[key] if key in raw else default
@@ -135,6 +156,45 @@ class AppConfig:
             vision_recall_mode=_as_bool(raw.get("vision_recall_mode", False)),
             vision_recall_first_pages=int(raw.get("vision_recall_first_pages", 5)),
             vision_recall_last_pages=int(raw.get("vision_recall_last_pages", 3)),
+            step_3_7_enabled=_as_bool(step37_value("enabled", False)),
+            step_3_7_maximum_contract_pages=max(
+                1, int(step37_value("maximum_contract_pages", 3))
+            ),
+            step_3_7_maximum_cadastral_pages=max(
+                0, int(step37_value("maximum_cadastral_pages", 1))
+            ),
+            step_3_7_maximum_total_pages=max(
+                1, int(step37_value("maximum_total_pages", 4))
+            ),
+            step_3_7_maximum_chars_per_page=max(
+                500, int(step37_value("maximum_chars_per_page", 12_000))
+            ),
+            step_3_7_maximum_total_context_chars=max(
+                2_000, int(step37_value("maximum_total_context_chars", 40_000))
+            ),
+            step_3_7_cadastral_page_threshold=max(
+                1, int(step37_value("cadastral_page_threshold", 7))
+            ),
+            step_3_7_cadastral_min_indicator_diversity=max(
+                1, int(step37_value("cadastral_min_indicator_diversity", 2))
+            ),
+            step_3_7_cadastral_ocr_quality_threshold=max(
+                0.0,
+                min(
+                    1.0,
+                    float(step37_value("cadastral_ocr_quality_threshold", 0.60)),
+                ),
+            ),
+            step_3_7_maximum_cadastral_visual_candidates=max(
+                0,
+                int(step37_value("maximum_cadastral_visual_candidates", 3)),
+            ),
+            step_3_7_cadastral_indicator_scores={
+                str(key): int(value)
+                for key, value in dict(
+                    step37_value("cadastral_indicator_scores", {}) or {}
+                ).items()
+            },
         )
 
     def ensure_directories(self) -> None:
