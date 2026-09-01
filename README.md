@@ -482,6 +482,15 @@ As categorias oficiais são:
 
 ## Notas importantes
 
+### Step 3.6 — Evidence Resolution and Vision Recall
+
+O resolvedor conserva todas as evidências em `raw_json["step3_6_evidence"]`
+e publica o valor final a partir da respetiva autoridade documental; uma saída
+do LLM não pode substituir evidência determinística. Conflitos permanecem
+visíveis em `evidence_conflicts`. Consulte [docs/step3.6.md](docs/step3.6.md)
+e use `python -m doc_register --vision-recall-last 10 --config config.json`
+para revalidar, de forma seletiva, os últimos documentos registados.
+
 - PDFs digitais normalmente nao precisam de OCR. PDFs escaneados como imagem passam pelo `ocrmypdf` quando `ocr_enabled` estiver ativo.
 - O Power Automate pode continuar fazendo o filtro de PDFs adicionados na última hora. Localmente, este programa também evita duplicados por hash.
 - Para instrumentos contratuais, o schema pede signatários, partes contratuais quando aplicável, datas, imóvel e valores específicos. `monthly_rent` só é obrigatório para contrato de arrendamento; CPCV usa `purchase_price`, opção de compra usa `option_price`, e cedência/cessão de posição contratual usa `assignment_price`.

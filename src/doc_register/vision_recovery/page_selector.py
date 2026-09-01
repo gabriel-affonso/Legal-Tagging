@@ -24,6 +24,9 @@ def build_vision_plan(
     if not fields:
         return VisionPlan(False, "critical_points_confident")
 
+    if bool(getattr(config, "vision_recall_mode", False)):
+        return _build_recall_plan(result, final_resolution_report, config, fields)
+
     page_limit = max(
         1,
         min(
@@ -44,6 +47,39 @@ def build_vision_plan(
     if not selected:
         return VisionPlan(False, "first_contract_pages_have_usable_ocr", tuple(fields))
     return VisionPlan(True, "low_ocr_and_uncertain_critical_points", tuple(fields), tuple(selected))
+
+
+def _build_recall_plan(result: ExtractionResult, report: Any, config: Any, fields: list[str]) -> VisionPlan:
+    """Target the evidence-bearing pages instead of re-reading a whole PDF."""
+    qualities = list(getattr(report, "page_quality", ()) or ())
+    zones = list(getattr(report, "zones", ()) or ())
+    page_numbers = {int(getattr(page, "page", 0) or 0) for page in qualities}
+    page_numbers.update(int(getattr(zone, "page_number", 0) or 0) for zone in zones)
+    page_numbers.discard(0)
+    if not page_numbers:
+        return VisionPlan(False, "no_page_evidence_for_recall", tuple(fields))
+    last_page = max(page_numbers)
+    first_count = max(1, int(getattr(config, "vision_recall_first_pages", 5)))
+    last_count = max(1, int(getattr(config, "vision_recall_last_pages", 3)))
+    selected: dict[int, list[str]] = {}
+    for page in range(1, min(last_page, first_count) + 1):
+        selected.setdefault(page, []).append("recall_first_pages")
+    for page in range(max(1, last_page - last_count + 1), last_page + 1):
+        selected.setdefault(page, []).append("recall_last_pages")
+    wanted_zones = {
+        "signature_page", "signature_recognition", "property_recital", "object_clause",
+        "cadastral_record", "land_registry_certificate", "party_identification",
+    }
+    for zone in zones:
+        page = getattr(zone, "page_number", None)
+        if page and getattr(zone, "zone_type", "") in wanted_zones:
+            selected.setdefault(int(page), []).append(f"recall_{getattr(zone, 'zone_type')}")
+    limit = max(first_count + last_count, int(getattr(config, "vision_max_pages_per_document", 8)))
+    plans = tuple(
+        VisionPagePlan(page, tuple(reasons))
+        for page, reasons in sorted(selected.items())[:limit]
+    )
+    return VisionPlan(bool(plans), "targeted_vision_recall", tuple(fields), plans)
 
 
 def _is_contract_candidate(result: ExtractionResult, signals: Any) -> bool:
@@ -73,6 +109,9 @@ def _uncertain_critical_fields(
         field_issues = any(field_name in issue for issue in issues)
         if not value or field_issues or score < score_threshold:
             uncertain.append(field_name)
+    conflict_text = " ".join(str(value or "") for value in (result.evidence_conflicts, result.cadastral_conflicts, result.review_reason)).lower()
+    if "conflict" in conflict_text or "ownership" in conflict_text:
+        uncertain.extend(["lessor", "lessee", "property_article", "property_section"])
     if str(result.confidence or "").lower() != "high" and not uncertain:
         uncertain = fields
     return list(dict.fromkeys(uncertain))

@@ -114,6 +114,21 @@ class DocumentProcessor:
 
         return processed
 
+    def vision_recall_last(self, limit: int) -> int:
+        """Re-resolve only registered records; rows are updated in place."""
+        self._vision_failures = 0
+        processed = 0
+        for candidate in self.register.recent_candidates(limit):
+            try:
+                LOGGER.info("Step 3.6 Vision Recall for %s", candidate.copied_path.name)
+                self._process_candidate(candidate, replace_existing=True)
+                processed += 1
+            except OllamaConnectionError:
+                raise
+            except Exception:
+                LOGGER.exception("Vision Recall failed for %s", candidate.copied_path)
+        return processed
+
     def _iter_pdf_files(self) -> list[Path]:
         cutoff = None
         if self.config.copy_only_recent_minutes > 0:

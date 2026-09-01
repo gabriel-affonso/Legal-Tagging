@@ -8,6 +8,7 @@ import shutil
 import subprocess
 
 from .models import ExtractedText
+from .page_orientation import detect_page_orientations
 
 
 LOGGER = logging.getLogger(__name__)
@@ -219,6 +220,10 @@ def extract_text_with_optional_ocr(
         )
 
     try:
+        orientations = detect_page_orientations(
+            path, max_pages=max_pages, language=ocr_language
+        )
+        orientation_note = _orientation_note(orientations)
         run_ocrmypdf(
             path,
             ocr_output,
@@ -271,6 +276,13 @@ def extract_text_with_optional_ocr(
         cache_note="OCR executado e texto OCR utilizado.",
     )
     if generated_result is not None:
+        if orientation_note:
+            generated_result = ExtractedText(
+                text=generated_result.text, source=generated_result.source,
+                native_text_chars=generated_result.native_text_chars,
+                ocr_text_chars=generated_result.ocr_text_chars,
+                notes=" ".join(part for part in (generated_result.notes, orientation_note) if part),
+            )
         return generated_result
 
     return ExtractedText(
@@ -549,6 +561,15 @@ def _remove_partial_file(path: Path) -> None:
             path.unlink()
     except OSError as exc:
         LOGGER.warning("Could not remove partial OCR output %s: %s", path, exc)
+
+
+def _orientation_note(orientations: list[object]) -> str:
+    rotated = [
+        str(getattr(item, "page", "?"))
+        for item in orientations
+        if int(getattr(item, "selected_degrees", 0) or 0) != 0
+    ]
+    return f"Step 3.6 orientação pré-OCR: páginas {', '.join(rotated)} avaliadas como rodadas." if rotated else ""
 
 
 def run_ocrmypdf(

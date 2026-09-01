@@ -12,6 +12,7 @@ import time
 from typing import Iterable
 
 from ..models import ExtractionResult
+from ..evidence import authority_for_candidate, conflicts_from_graph, evidence_graph
 from ..property_intelligence import (
     assess_cadastral_evidence,
     discover_caderneta_groups,
@@ -29,7 +30,7 @@ from .validation_rules import normalize_text
 CONTRACT_RE = re.compile(r"\b(?:contrato\s+de\s+arrendamento|arrendat[aá]ri[oa]|senhorios?|renda)\b", re.I)
 TAX_RE = re.compile(r"\b(?:NIF|NIPC|contribuinte)\s*(?:n[.ºo°]?\s*)?[:#-]?\s*(\d{9})\b", re.I)
 ROLE_MARKERS = {
-    "lessor": re.compile(r"\b(?:de\s+ora\s+em\s+diante|doravante|conjuntamente)\s+designad[oa]s?\s+por\s+(?:promitentes?\s+)?senhorios?\b|\btodos\s+na\s+qualidade\s+de\s+senhorios?\b|\bna\s+qualidade\s+de\s+senhorios?\b", re.I),
+    "lessor": re.compile(r"\b(?:de\s+ora\s+em\s+diante|doravante|conjuntamente)\s+designad[oa]s?\s+por\s+(?:promitentes?\s+)?senhor(?:io|ia)s?\b|\btodos\s+na\s+qualidade\s+de\s+senhor(?:io|ia)s?\b|\bna\s+qualidade\s+de\s+senhor(?:io|ia)s?\b", re.I),
     "lessee": re.compile(r"\b(?:de\s+ora\s+em\s+diante|doravante|conjuntamente)\s+designad[oa]s?\s+por\s+arrendat[aá]ri[oa]s?\b|\bna\s+qualidade\s+de\s+arrendat[aá]ri[oa]s?\b", re.I),
 }
 PROPERTY_NAME_RE = (
@@ -62,6 +63,7 @@ class DocumentZone:
     text_span: str
     ocr_quality: float
     internal_document: str = "contract"
+    document_class: str = "UNKNOWN"
 
     def to_dict(self) -> dict[str, object]:
         return {**asdict(self), "confidence": round(self.confidence, 3), "ocr_quality": round(self.ocr_quality, 3), "text_span": self.text_span[:900]}
@@ -139,13 +141,15 @@ class ContractResolutionReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "version": "3.3.3", "active": self.active,
+            "version": "3.6", "active": self.active,
             "document_zones": [item.to_dict() for item in self.zones],
             "page_quality_summary": [item.to_dict() for item in self.page_quality],
             "entities": list(self.entities.values()),
             "field_candidates": [item.to_dict() for item in self.candidates],
             "field_decisions": self.decisions, "conflicts": self.conflicts,
             "ownership_evidence": _ownership_snapshot(self),
+            "evidence_graph": evidence_graph(self.candidates),
+            "evidence_conflicts": conflicts_from_graph(evidence_graph(self.candidates)),
             "cadastral_evidence": self.cadastral_evidence,
             "unresolved_fields": self.unresolved_fields,
             "metrics": {"candidate_count": len(self.candidates), "zone_count": len(self.zones)},
@@ -234,6 +238,7 @@ def apply_contract_final_resolution(result: ExtractionResult, report: ContractRe
         )
         result.review_reason = "; ".join(part for part in (result.review_reason, conflict_reasons) if part)
     report.unresolved_fields = [name for name in ("lessee", "property_article", "property_section") if not str(getattr(result, name, "") or "")]
+    _apply_ownership_model(result, report)
     _attach(result, report)
     return result
 
@@ -261,13 +266,14 @@ def detect_document_zones(document_text: str, page_quality: list[PageQualityRepo
             "corporate_resolution": ("ata", "conselho de administração"),
             "power_of_attorney": ("procuração", "procurador"),
             "bank_details": ("iban", "nib", "swift"),
+            "identification_document": ("passaporte", "cartão de cidadão", "cartao de cidadao", "bilhete de identidade"),
         }
         lowered = normalize_text(text)
         for zone_type, markers in signals.items():
             hits = [marker for marker in markers if normalize_text(marker) in lowered]
             if hits:
                 confidence = min(0.99, 0.52 + 0.17 * len(hits) + (0.12 if zone_type in {"cadastral_record", "signature_recognition"} else 0.0))
-                zones.append(DocumentZone(page, zone_type, confidence, hits, text.strip(), quality_by_page.get(page, 0.5), _internal_document(zone_type)))
+                zones.append(DocumentZone(page, zone_type, confidence, hits, text.strip(), quality_by_page.get(page, 0.5), _internal_document(zone_type), _document_class(text, zone_type)))
     return zones or [DocumentZone(None, "unknown", 0.1, [], str(document_text or "")[:1200], quality_by_page.get(None, 0.0), "unknown")]
 
 
@@ -304,6 +310,7 @@ def _add_internal_caderneta_zone(report: ContractResolutionReport, document_text
             text_span=text_span,
             ocr_quality=sum(quality_by_page.get(page.page_number, 0.7) for page in pages) / len(pages),
             internal_document=f"caderneta_predial_rustica_{index:02d}",
+            document_class="CADERNETA",
         ))
 
 
@@ -392,6 +399,15 @@ def _extract_property_candidates(report: ContractResolutionReport, zone: Documen
             for name in _names(match.group(1), "owner_name"):
                 candidate = _candidate("cadastral_owner", name, zone, "cadastral_owner", "cadastral_owner_label", 0.94)
                 _add(report, candidate)
+    if zone.zone_type == "land_registry_certificate":
+        for label, field_name, role in (
+            (r"sujeito\s+ativo", "crp_active_subject", "crp_active_subject"),
+            (r"sujeito\s+passivo", "crp_passive_subject", "crp_passive_subject"),
+            (r"titular(?:es)?|propriet[aá]rio(?:s)?", "registered_owner", "registered_owner"),
+        ):
+            for match in re.finditer(rf"\b(?:{label})\s*[:#-]?\s*([^\n]{{4,180}})", zone.text_span, re.I):
+                for name in _names(match.group(1), "owner_name"):
+                    _add(report, _candidate(field_name, name, zone, role, "crp_subject_label", 0.96))
 
 
 def _extract_rent_candidates(report: ContractResolutionReport, zone: DocumentZone) -> None:
@@ -490,7 +506,7 @@ def inject_vision_candidates(report: ContractResolutionReport, candidates: Itera
 
 def _resolve_entities(report: ContractResolutionReport) -> None:
     for index, candidate in enumerate(report.candidates, start=1):
-        if candidate.field not in {"lessor", "lessee", "cadastral_owner"}:
+        if candidate.field not in {"lessor", "lessee", "cadastral_owner", "registered_owner", "crp_active_subject", "crp_passive_subject"}:
             continue
         key = normalize_text(candidate.normalized_value)
         if not key:
@@ -640,7 +656,16 @@ def _block_internal_caderneta_candidates(report: ContractResolutionReport) -> No
 
 def _select_one(candidates: Iterable[FactCandidate]) -> FactCandidate | None:
     values = list(candidates)
-    return max(values, key=lambda item: (item.final_score, item.source_authority, len(item.normalized_value)), default=None)
+    # A structurally verified caderneta remains the canonical publication
+    # source for cadastral identity. Contract values are preserved as equally
+    # visible evidence because a lease can legitimately describe a parcel or
+    # historic article differently from the tax record.
+    if values and values[0].field in {"property_name", "property_article", "property_section", "property_total_area"}:
+        cadastral = [item for item in values if authority_for_candidate(item)[0] == "CADERNETA"]
+        if cadastral:
+            values = cadastral
+    # A model/recovery score cannot displace explicit documentary evidence.
+    return max(values, key=lambda item: (authority_for_candidate(item)[1], item.final_score, item.source_authority, len(item.normalized_value)), default=None)
 
 
 def _select_many(candidates: Iterable[FactCandidate]) -> list[FactCandidate]:
@@ -648,7 +673,7 @@ def _select_many(candidates: Iterable[FactCandidate]) -> list[FactCandidate]:
     for item in candidates:
         key = normalize_text(item.normalized_value)
         current = by_name.get(key)
-        if not current or item.final_score > current.final_score:
+        if not current or (authority_for_candidate(item)[1], item.final_score) > (authority_for_candidate(current)[1], current.final_score):
             by_name[key] = item
     if not by_name:
         return []
@@ -693,13 +718,38 @@ def _ownership_snapshot(report: ContractResolutionReport) -> dict[str, object]:
         "contract_lessors": contract_lessors,
         "declared_owners": contract_lessors if declared else [],
         "cadastral_owners": cadastral,
-        "registered_owners": [],
+        "registered_owners": _names_for_field(report, "registered_owner"),
+        "crp_active_subjects": _names_for_field(report, "crp_active_subject"),
+        "crp_passive_subjects": _names_for_field(report, "crp_passive_subject"),
         "ownership_conflicts": [
             item for item in report.conflicts
             if str(item.get("type") or "").startswith("ownership_")
             or item.get("type") == "cadastral_owner_matches_lessee"
         ],
     }
+
+
+def _names_for_field(report: ContractResolutionReport, field_name: str) -> list[str]:
+    return [item.normalized_value for item in _select_many(
+        item for item in report.candidates
+        if item.field == field_name and item.validation_status == "valid"
+    )]
+
+
+def _apply_ownership_model(result: ExtractionResult, report: ContractResolutionReport) -> None:
+    """Keep owners, contractual parties and CRP subjects as distinct roles."""
+    snapshot = _ownership_snapshot(report)
+
+    def entries(values: list[str], field_name: str) -> list[dict[str, str]]:
+        return [{"name": name, "tax_id": "", "ownership_share": ""} for name in values]
+
+    result.contract_lessor = entries(snapshot["contract_lessors"], "lessor")
+    result.contract_lessee = entries(_names_for_field(report, "lessee"), "lessee")
+    result.cadastral_owners = entries(snapshot["cadastral_owners"], "cadastral_owner")
+    result.registered_owners = entries(snapshot["registered_owners"], "registered_owner")
+    result.crp_active_subjects = entries(snapshot["crp_active_subjects"], "crp_active_subject")
+    result.crp_passive_subjects = entries(snapshot["crp_passive_subjects"], "crp_passive_subject")
+    result.owners = [*result.cadastral_owners, *result.registered_owners]
 
 
 def _decision(
@@ -775,10 +825,12 @@ def _valid_tax_id(value: str) -> bool:
 
 
 def _names(value: str, role: str) -> list[str]:
+    value = re.sub(r"^\s*\[Page\s+\d+\]\s*", "", value, flags=re.I)
     value = re.sub(r"\b(?:NIF|NIPC|contribuinte)\s*(?:n[.ºo°]?\s*)?[:#-]?\s*\d{9}\b", "", value, flags=re.I)
     value = re.split(r"\b(?:residente|morada|com\s+sede|representada\s+por|portador|cart[aã]o\s+de\s+cidad[aã]o)\b", value, maxsplit=1, flags=re.I)[0]
-    value = re.sub(r"^.*?\b(?:entre|outorgante)\s*[:,-]?\s*", "", value, flags=re.I)
+    value = re.sub(r"^\s*(?:entre|outorgante)\s*[:,-]?\s*", "", value, flags=re.I)
     value = re.sub(r"^\s*CONTRATO[^\n]*\n", "", value, flags=re.I)
+    value = re.sub(r"^\s*(?:entre|outorgante)\s*[:,-]?\s*", "", value, flags=re.I)
     value = re.sub(r"^\s*(?:e\s+)?leg[ií]timos?\s+propriet[aá]rios?\s*[.;:-]*\s*", "", value, flags=re.I)
     value = value.strip(" ,;:-\n")
     names: list[str] = []
@@ -861,6 +913,32 @@ def _internal_document(zone_type: str) -> str:
     return "contract"
 
 
+def _document_class(text: str, zone_type: str) -> str:
+    """Step 3.6 zone taxonomy prevents annexes from polluting property facts."""
+    lowered = normalize_text(text)
+    if zone_type == "cadastral_record":
+        return "CADERNETA"
+    if zone_type == "land_registry_certificate":
+        return "CRP"
+    if zone_type == "bank_details":
+        return "BANK_STATEMENT"
+    if zone_type == "power_of_attorney":
+        return "POWER_OF_ATTORNEY"
+    if zone_type == "parcel_plan":
+        return "PLANT" if "planta" in lowered else "MAP"
+    if zone_type in {"corporate_registry", "corporate_resolution"}:
+        return "COMPANY_CERTIFICATE"
+    if "passaporte" in lowered:
+        return "PASSPORT"
+    if "cartao de cidadao" in lowered or "cartão de cidadão" in text.lower():
+        return "CC"
+    if zone_type in {"contract_title", "contract_preamble", "party_identification", "property_recital", "object_clause", "term_clause", "rent_clause"}:
+        return "CONTRACT_BODY"
+    if zone_type in {"signature_page", "signature_recognition"}:
+        return "CONTRACT_SIGNATURE"
+    return "UNKNOWN"
+
+
 def _pages(text: str) -> list[tuple[int | None, str]]:
     raw = str(text or "")
     matches = list(re.finditer(r"\[Page\s+(\d+)\]", raw, re.I))
@@ -873,6 +951,22 @@ def _attach(result: ExtractionResult, report: ContractResolutionReport) -> None:
     raw = result.raw_json if isinstance(result.raw_json, dict) else {}
     result.raw_json = dict(raw)
     result.raw_json["step2_7_final_resolution"] = report.to_dict()
+    graph = evidence_graph(report.candidates)
+    graph_conflicts = conflicts_from_graph(graph)
+    result.evidence_graph = graph
+    result.evidence_status = "RESOLVED_WITH_CONFLICTS" if graph_conflicts else "RESOLVED"
+    result.evidence_conflicts = "; ".join(
+        f"{item['field']}: {', '.join(item['values'])}" for item in graph_conflicts
+    )
+    result.raw_json["step3_6_evidence"] = {
+        "version": "3.6", "graph": graph, "conflicts": graph_conflicts,
+        "ownership": {
+            "contract_lessor": result.contract_lessor, "contract_lessee": result.contract_lessee,
+            "cadastral_owners": result.cadastral_owners, "registered_owners": result.registered_owners,
+            "crp_active_subjects": result.crp_active_subjects, "crp_passive_subjects": result.crp_passive_subjects,
+            "owners": result.owners,
+        },
+    }
     internal_zones = [
         zone for zone in report.zones
         if zone.internal_document.startswith("caderneta_predial_rustica_")

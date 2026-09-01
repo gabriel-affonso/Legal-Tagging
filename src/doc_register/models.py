@@ -117,6 +117,18 @@ class ExtractionResult:
     cadastral_evidence_status: str = ""
     cadastral_evidence_pages: str = ""
     cadastral_conflicts: str = ""
+    evidence_status: str = ""
+    evidence_conflicts: str = ""
+    evidence_graph: dict[str, Any] = field(default_factory=dict)
+    # Step 3.6 ownership roles are structured internally; legacy owner_name
+    # remains the resolved cadastral holder for spreadsheet compatibility.
+    contract_lessor: list[dict[str, str]] = field(default_factory=list)
+    contract_lessee: list[dict[str, str]] = field(default_factory=list)
+    cadastral_owners: list[dict[str, str]] = field(default_factory=list)
+    registered_owners: list[dict[str, str]] = field(default_factory=list)
+    crp_active_subjects: list[dict[str, str]] = field(default_factory=list)
+    crp_passive_subjects: list[dict[str, str]] = field(default_factory=list)
+    owners: list[dict[str, str]] = field(default_factory=list)
     deterministic_json: dict[str, Any] = field(default_factory=dict)
     llm_json: dict[str, Any] = field(default_factory=dict)
     raw_json: dict[str, Any] = field(default_factory=dict)

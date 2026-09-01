@@ -56,6 +56,9 @@ class AppConfig:
     vision_auto_accept_confidence: float = 0.95
     vision_keep_alive: str = "0"
     vision_max_failures_per_batch: int = 3
+    vision_recall_mode: bool = False
+    vision_recall_first_pages: int = 5
+    vision_recall_last_pages: int = 3
 
     @classmethod
     def from_json(cls, path: Path) -> "AppConfig":
@@ -129,6 +132,9 @@ class AppConfig:
             vision_auto_accept_confidence=float(raw.get("vision_auto_accept_confidence", 0.95)),
             vision_keep_alive=str(raw.get("vision_keep_alive", "0")),
             vision_max_failures_per_batch=int(raw.get("vision_max_failures_per_batch", 3)),
+            vision_recall_mode=_as_bool(raw.get("vision_recall_mode", False)),
+            vision_recall_first_pages=int(raw.get("vision_recall_first_pages", 5)),
+            vision_recall_last_pages=int(raw.get("vision_recall_last_pages", 3)),
         )
 
     def ensure_directories(self) -> None:

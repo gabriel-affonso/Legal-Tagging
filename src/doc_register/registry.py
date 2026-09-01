@@ -112,6 +112,36 @@ class ExcelRegister:
     def append(self, candidate: PdfCandidate, result: ExtractionResult) -> None:
         self._write(candidate, result, replace_existing=False)
 
+    def recent_candidates(self, limit: int) -> list[PdfCandidate]:
+        """Return recoverable records newest-first for Step 3.6 batch recall."""
+        if limit <= 0:
+            return []
+        with _workbook_lock(self.path):
+            workbook, sheet = self._load()
+            headers = {str(sheet.cell(row=1, column=index).value): index for index in range(1, sheet.max_column + 1)}
+            required = {"source_file_name", "copied_file_path", "sha256"}
+            if not required.issubset(headers):
+                workbook.close()
+                return []
+            candidates: list[PdfCandidate] = []
+            for row in range(sheet.max_row, 1, -1):
+                copied = Path(str(sheet.cell(row=row, column=headers["copied_file_path"]).value or ""))
+                source_name = str(sheet.cell(row=row, column=headers["source_file_name"]).value or copied.name)
+                if not copied.is_file():
+                    continue
+                digest = str(sheet.cell(row=row, column=headers["sha256"]).value or "").strip()
+                if not digest:
+                    continue
+                modified = datetime.fromtimestamp(copied.stat().st_mtime, tz=timezone.utc)
+                # The original may no longer be present in the intake folder;
+                # retain its filename for audit while processing the immutable
+                # copied PDF.
+                candidates.append(PdfCandidate(Path(source_name), copied, digest, modified, modified))
+                if len(candidates) >= limit:
+                    break
+            workbook.close()
+            return candidates
+
     def upsert(self, candidate: PdfCandidate, result: ExtractionResult) -> None:
         """Replace the registered row for a PDF hash, or add it when absent."""
         self._write(candidate, result, replace_existing=True)
