@@ -145,6 +145,14 @@ source .venv/bin/activate
 doc-register scan --config config.json
 ```
 
+## Step 4.0 — saída normalizada
+
+O formato padrão passa a ser `normalized`. Ele escreve `Entrada_Rapida`, as
+tabelas operacionais `db.*` e folhas `audit.*` no mesmo workbook. O registo
+legado continua disponível com `--output-format legacy` ou `--output-format both`.
+Consulte [docs/step4.0.md](docs/step4.0.md) para a configuração do template,
+semântica de `parcela_id` e regras de idempotência.
+
 ## Identificação de terrenos
 
 Para executar apenas a identificação de terrenos em contratos de arrendamento,

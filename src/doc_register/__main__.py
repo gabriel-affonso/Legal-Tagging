@@ -39,7 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="scan",
-        choices=["scan", "watch", "property-scan", "property-watch"],
+        choices=["scan", "watch", "property-scan", "property-watch", "normalize"],
         help="Run the main register or the independent property extraction pipeline.",
     )
     parser.add_argument("--config", default="config.json", help="Path to configuration JSON.")
@@ -90,6 +90,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "resolved property instead of one row per contract."
         ),
     )
+    parser.add_argument(
+        "--output-format",
+        choices=["legacy", "normalized", "both"],
+        help="Step 4.0 output: historical register, normalized workbook, or both.",
+    )
     return parser
 
 
@@ -120,8 +125,16 @@ def main() -> None:
         parser.error("Step 3.7 is available only with scan or watch")
 
     config = AppConfig.from_json(Path(args.config).expanduser().resolve())
+    if args.output_format:
+        config = replace(config, output_format=args.output_format)
+    if config.output_format not in {"legacy", "normalized", "both"}:
+        parser.error("config.json: output_format must be legacy, normalized, or both")
     _configure_logging(config.log_dir, args.log_level)
     config.ensure_directories()
+    if args.command == "normalize":
+        counts = DocumentProcessor(config).normalized_register.process_pending()
+        logging.info("Step 4.0 normalized pending entries: %s", counts)
+        return
     if args.vision_recall or args.vision_recall_last is not None:
         config = replace(config, vision_enabled=True, vision_recall_mode=True)
     if focused:

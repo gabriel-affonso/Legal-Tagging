@@ -72,6 +72,14 @@ class AppConfig:
     step_3_7_cadastral_ocr_quality_threshold: float = 0.60
     step_3_7_maximum_cadastral_visual_candidates: int = 3
     step_3_7_cadastral_indicator_scores: dict[str, int] = field(default_factory=dict)
+    # Step 4.0 normalized operational workbook.  ``normalized`` is the new
+    # default; ``legacy`` and ``both`` retain the historical register during
+    # the migration window.
+    output_format: str = "normalized"
+    normalized_output_path: Path | None = None
+    normalized_template_path: Path | None = None
+    normalized_batch_id: str = ""
+    normalized_reference_mg_context: str = ""
 
     @classmethod
     def from_json(cls, path: Path) -> "AppConfig":
@@ -195,6 +203,19 @@ class AppConfig:
                     step37_value("cadastral_indicator_scores", {}) or {}
                 ).items()
             },
+            output_format=str(raw.get("output_format", "normalized")).strip().lower(),
+            normalized_output_path=(
+                as_path("normalized_output_path")
+                if raw.get("normalized_output_path") else None
+            ),
+            normalized_template_path=(
+                as_path("normalized_template_path")
+                if raw.get("normalized_template_path") else None
+            ),
+            normalized_batch_id=str(raw.get("normalized_batch_id", "")).strip(),
+            normalized_reference_mg_context=str(
+                raw.get("normalized_reference_mg_context", "")
+            ).strip(),
         )
 
     def ensure_directories(self) -> None:

@@ -16,6 +16,7 @@ from .ollama_client import OllamaConnectionError, extract_with_ollama
 from .pdf_text import extract_pdf_caderneta_text, extract_text_with_optional_ocr, run_ocrmypdf
 from .property_intelligence import discover_caderneta_groups
 from .registry import ExcelRegister, PropertyTableRegister
+from .step40 import NormalizedWorkbookRegister
 from .text_selection import select_classification_text, select_highlighted_relevant_text
 from .ai_reviewer import review_if_needed
 from .vision_recovery import recover_contract_with_vision
@@ -52,6 +53,11 @@ class DocumentProcessor:
         self.config = config
         self.register = ExcelRegister(config.excel_path)
         self.property_table_register = PropertyTableRegister(config.excel_path)
+        normalized_path = getattr(config, "normalized_output_path", None) or config.excel_path
+        self.normalized_register = NormalizedWorkbookRegister(
+            normalized_path,
+            template_path=getattr(config, "normalized_template_path", None),
+        )
         self._vision_failures = 0
 
     def scan_once(
@@ -70,7 +76,11 @@ class DocumentProcessor:
                 rows,
             )
             return contracts
-        target_register = self.property_table_register if property_table else self.register
+        output_format = getattr(self.config, "output_format", "normalized")
+        target_register = (
+            self.property_table_register if property_table else
+            self.normalized_register if output_format == "normalized" else self.register
+        )
         existing_hashes = set() if reprocess_cadernetas else target_register.existing_hashes()
         processed = 0
 
@@ -106,6 +116,8 @@ class DocumentProcessor:
                 if candidate and candidate.sha256 not in existing_hashes:
                     if property_table:
                         self.property_table_register.upsert(candidate, _error_result(exc))
+                    elif output_format == "normalized":
+                        self.normalized_register.publish(candidate, _error_result(exc))
                     elif reprocess_cadernetas:
                         self.register.upsert(candidate, _error_result(exc))
                     else:
@@ -521,6 +533,28 @@ class DocumentProcessor:
                 "Registered %s property row(s) for %s in Property Table.",
                 property_rows,
                 candidate.source_path.name,
+            )
+        elif getattr(self.config, "output_format", "normalized") == "normalized":
+            self.normalized_register.publish(
+                candidate,
+                result,
+                reference_context=getattr(self.config, "normalized_reference_mg_context", ""),
+                batch_id=getattr(self.config, "normalized_batch_id", ""),
+                document_text=document_text,
+            )
+        elif getattr(self.config, "output_format", "normalized") == "both":
+            # The legacy writer remains available during transition.  The
+            # Step 4.0 normalizer remains the exclusive publisher of db.*.
+            if replace_existing:
+                self.register.upsert(candidate, result)
+            else:
+                self.register.append(candidate, result)
+            self.normalized_register.publish(
+                candidate,
+                result,
+                reference_context=getattr(self.config, "normalized_reference_mg_context", ""),
+                batch_id=getattr(self.config, "normalized_batch_id", ""),
+                document_text=document_text,
             )
         elif replace_existing:
             self.register.upsert(candidate, result)
