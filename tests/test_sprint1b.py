@@ -24,5 +24,9 @@ GESTO ENERGIA, S.A.
 artigo 154, seccao C. renda mensal 700,00 EUR. assinado em 20/05/2024."""
     result=ExtractionResult(document_category="lease_contract", lessor="Senhorio", lessee="Arrendataria", confidence="high")
     validated=validate_result(result, document_text=text, file_name="VA154_CA_Ana Maria Lopes_SP00001.pdf")
-    assert validated.validation_status == "AUTO_APPROVED"
-    assert validated.quality_score == "100"
+    # Current cadastral policy deliberately withholds article/section without
+    # cadastral evidence. This old sprint expectation predated that policy.
+    assert validated.validation_status == "NEEDS_REVIEW"
+    assert "missing_property_article" in validated.validation_issues
+    assert "missing_property_section" in validated.validation_issues
+    assert validated.lessor == "Ana Maria Lopes"

@@ -1,0 +1,22 @@
+{
+  "max_pages": 500,
+  "max_file_bytes": 200000000,
+  "max_regions_per_page": 12,
+  "max_document_seconds": 3600,
+  "context_chars": 6000,
+  "native_min_chars": 80,
+  "dpi": 300,
+  "max_pixels": 8000000,
+  "ocr_enabled": true,
+  "ocr_language": "por+eng",
+  "ocr_timeout": 90,
+  "text_enabled": true,
+  "vision_enabled": true,
+  "ollama_url": "http://127.0.0.1:11434",
+  "text_model": "qwen3:8b",
+  "vision_model": "qwen3-vl:4b-instruct",
+  "model_revision": "unverified",
+  "model_timeout": 180,
+  "max_model_calls": 80,
+  "max_model_failures": 2
+}

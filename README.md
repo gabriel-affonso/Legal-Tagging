@@ -1,5 +1,27 @@
 # Document Management Ollama
 
+## Step 5.0
+
+Nova pipeline local de contratos com inventário de todas as páginas, evidências
+localizáveis, OCR/visão por recortes, candidatos, resolução única, revisão humana
+auditável e avaliador independente. **A meta de 95% ainda não foi demonstrada:**
+falta um conjunto representativo de contratos rotulados, e a autoaceitação de
+OCR/visão/LLM permanece desabilitada até calibração.
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-step5.lock.txt
+.venv/bin/python -m pip install --no-deps .
+./scripts/doc-register-step5 doctor
+./scripts/doc-register-step5 scan /caminho/contratos --output /caminho/step5-runs --config examples/step5.config.json
+```
+
+[Uso, arquitetura, avaliação e migração](docs/step5.0.md) ·
+[Resultados reais e limitações](docs/step5.0-benchmark.md).
+Os comandos e a documentação histórica abaixo continuam disponíveis para
+compatibilidade. Use o launcher acima para executar explicitamente o Step 5.0
+a partir deste checkout.
+
 Programa local para criar um register de documentos a partir de PDFs sincronizados do SharePoint/OneDrive, usando regras determinísticas, OCR local, Ollama local e Excel. A v2 foi desenhada para documentos confidenciais: não usa cloud, APIs externas ou fallback remoto.
 
 ## Fluxo

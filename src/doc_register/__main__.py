@@ -99,6 +99,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "step5":
+        from .step50.cli import main as step5_main
+        step5_main(sys.argv[2:])
+        return
     parser = _build_parser()
     args = parser.parse_args()
 

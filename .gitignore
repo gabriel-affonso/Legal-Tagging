@@ -145,3 +145,8 @@ logs/
 # Jupyter
 # =========================================================
 .ipynb_checkpoints/
+# Step 5.0 generated build copies and evidence artifacts
+build/
+dist/
+step5-runs/
+!examples/step5.config.json
