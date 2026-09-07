@@ -104,6 +104,10 @@ def main() -> None:
         from .step50.cli import main as step5_main
         step5_main(sys.argv[2:])
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "step55":
+        from .step55.cli import main as step55_main
+        step55_main(sys.argv[2:])
+        return
     parser = _build_parser()
     args = parser.parse_args()
 

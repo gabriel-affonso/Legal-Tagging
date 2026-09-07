@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec "$project_dir/.venv/bin/python" -m doc_register.step55 "$@"

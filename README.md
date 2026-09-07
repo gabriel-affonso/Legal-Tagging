@@ -22,6 +22,18 @@ Os comandos e a documentação histórica abaixo continuam disponíveis para
 compatibilidade. Use o launcher acima para executar explicitamente o Step 5.0
 a partir deste checkout.
 
+## Step 5.5
+
+Pipeline piloto canónica, independente do Step 5.0 e sem escrita no Excel
+operacional. Estrutura evidências, entidades provisórias, fatos tipados e
+tarefas de revisão/LLM para contratos, cadernetas e comprovativos.
+
+```sh
+./scripts/doc-register-step55 scan /caminho/documento.pdf --output /caminho/step55-runs
+```
+
+[Arquitetura, limites e execução do Step 5.5](docs/step5.5.md).
+
 Programa local para criar um register de documentos a partir de PDFs sincronizados do SharePoint/OneDrive, usando regras determinísticas, OCR local, Ollama local e Excel. A v2 foi desenhada para documentos confidenciais: não usa cloud, APIs externas ou fallback remoto.
 
 ## Fluxo

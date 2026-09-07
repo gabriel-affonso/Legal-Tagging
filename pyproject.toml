@@ -9,6 +9,7 @@ description = "Local PDF document register powered by Ollama and Excel."
 requires-python = ">=3.11"
 dependencies = [
     "openpyxl>=3.1.5",
+    "pydantic>=2.13,<3",
     "PyMuPDF>=1.24.0",
     "pypdf>=5.0.0",
 ]
@@ -16,6 +17,7 @@ dependencies = [
 [project.scripts]
 doc-register = "doc_register.__main__:main"
 doc-register-step5 = "doc_register.step50.cli:main"
+doc-register-step55 = "doc_register.step55.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest==9.1.1"]
