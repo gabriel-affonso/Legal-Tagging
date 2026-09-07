@@ -28,7 +28,7 @@ class Step55Tests(unittest.TestCase):
 
     def test_temporal_types_are_distinct(self):
         duration = Duration(years=29, months=11)
-        literal = LiteralDate(value=__import__("datetime").date(2020, 12, 22))
+        literal = LiteralDate(value="2020-12-22")
         self.assertEqual(duration.kind, "duration")
         self.assertEqual(literal.kind, "literal_date")
         with self.assertRaises(ValueError):
@@ -96,7 +96,7 @@ Assinado em 22 de Dezembro de 2020
 O contrato terá a duração de 29 anos e 11 meses.
 O início do arrendamento depende da Condição Suspensiva.
 Renda anual de 1.000,00 EUR por hectare, anualmente.
-25% da renda anual será pago após licença.
+Pagamento de reserva de 25% da renda anual será pago após licença.
 Prédio denominado Fonte da Carvalha, artigo matricial: 68, descrição predial: 529,
 freguesia de Castedo, concelho de Torre de Moncorvo, área total de 25.650 m2.
 Prédio denominado Cascalheira, artigo matricial: 306, descrição predial: 530,
@@ -112,7 +112,7 @@ freguesia de Castedo, concelho de Torre de Moncorvo, área total de 11.502 m2.
             self.assertEqual({item["typed_value"] for item in result["assertions"] if item["predicate"] == "cadastral_article"}, {"68", "306"})
             areas = values["area_measurement"]
             self.assertTrue(any(item["concept"] == "leased_usable" and item["unit"] == "ha" for item in areas))
-            self.assertTrue(any(item["concept"] == "cadastral_total" and item["amount"] == "25650" for item in areas))
+            self.assertTrue(any(item["concept"] == "contract_stated_property_total" and item["amount"] == "25650" for item in areas))
             self.assertNotIn("contract_end_date", values)
 
 
