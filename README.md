@@ -193,8 +193,16 @@ Para reler apenas os PDFs que já estão identificados no Excel como contratos
 de arrendamento, sem voltar a classificar documentos nem atualizar as folhas
 operacionais, use:
 
+No macOS/Linux:
+
 ```bash
 ./scripts/doc-register rent-scan --config config.json
+```
+
+No Windows (PowerShell ou Prompt de Comando):
+
+```powershell
+.\scripts\doc-register.bat rent-scan --config config.json
 ```
 
 O comando usa as colunas `document_category`, `document_type`,
@@ -206,8 +214,7 @@ um fallback textual limitado ao número de páginas definido em `max_pdf_pages`.
 
 Os resultados são gravados na folha `Rent Extraction`, incluindo o valor
 numérico, a evidência literal, a página e o estado da extração. Para atualizar
-uma extração já existente, execute `./scripts/doc-register rent-scan --force --config
-config.json`.
+uma extração já existente, acrescente `--force` ao mesmo comando.
 
 ## Identificação de terrenos
 
