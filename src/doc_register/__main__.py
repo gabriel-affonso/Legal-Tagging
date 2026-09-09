@@ -10,6 +10,7 @@ import time
 from .config import AppConfig
 from .processor import DocumentProcessor
 from .property_processor import PropertyExtractionProcessor
+from .rent_processor import LeaseRentExtractionProcessor
 
 
 def _configure_logging(log_dir: Path, log_level: str) -> None:
@@ -39,7 +40,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="scan",
-        choices=["scan", "watch", "property-scan", "property-watch", "normalize"],
+        choices=["scan", "watch", "property-scan", "property-watch", "rent-scan", "normalize"],
         help="Run the main register or the independent property extraction pipeline.",
     )
     parser.add_argument("--config", default="config.json", help="Path to configuration JSON.")
@@ -91,6 +92,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With rent-scan, re-extract contracts already present in 'Rent Extraction'.",
+    )
+    parser.add_argument(
         "--output-format",
         choices=["legacy", "normalized", "both"],
         help="Step 4.0 output: historical register, normalized workbook, or both.",
@@ -113,6 +119,8 @@ def main() -> None:
 
     if args.property_table and args.command in {"property-scan", "property-watch"}:
         parser.error("--property-table is available only with scan or watch")
+    if args.force and args.command != "rent-scan":
+        parser.error("--force is available only with rent-scan")
     if args.vision_recall_last is not None and args.vision_recall_last <= 0:
         parser.error("--vision-recall-last must be greater than zero")
     if args.last is not None and args.last <= 0:
@@ -143,6 +151,10 @@ def main() -> None:
     if args.command == "normalize":
         counts = DocumentProcessor(config).normalized_register.process_pending()
         logging.info("Step 4.0 normalized pending entries: %s", counts)
+        return
+    if args.command == "rent-scan":
+        processed = LeaseRentExtractionProcessor(config).scan_once(force=args.force)
+        logging.info("Rent clause scan complete. Processed %s eligible contract(s).", processed)
         return
     if args.vision_recall or args.vision_recall_last is not None:
         config = replace(config, vision_enabled=True, vision_recall_mode=True)

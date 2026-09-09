@@ -187,6 +187,29 @@ legado continua disponível com `--output-format legacy` ou `--output-format bot
 Consulte [docs/step4.0.md](docs/step4.0.md) para a configuração do template,
 semântica de `parcela_id` e regras de idempotência.
 
+## Extração focada de renda e título de reserva
+
+Para reler apenas os PDFs que já estão identificados no Excel como contratos
+de arrendamento, sem voltar a classificar documentos nem atualizar as folhas
+operacionais, use:
+
+```bash
+source .venv/bin/activate
+doc-register rent-scan --config config.json
+```
+
+O comando usa as colunas `document_category`, `document_type`,
+`document_subtype` ou `contract_type` do Excel como filtro de elegibilidade.
+Extrai somente a Cláusula 5.ª (Renda e Forma de Pagamento): a renda anual do
+ponto 1 e a percentagem a título de reserva do ponto 9. Começa pelas páginas 8
+e 9; se não obtiver os dois valores, usa OCR local (quando ativado) e, por fim,
+um fallback textual limitado ao número de páginas definido em `max_pdf_pages`.
+
+Os resultados são gravados na folha `Rent Extraction`, incluindo o valor
+numérico, a evidência literal, a página e o estado da extração. Para atualizar
+uma extração já existente, execute `doc-register rent-scan --force --config
+config.json`.
+
 ## Identificação de terrenos
 
 Para executar apenas a identificação de terrenos em contratos de arrendamento,
