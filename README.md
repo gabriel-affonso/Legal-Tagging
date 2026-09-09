@@ -205,6 +205,9 @@ No Windows (PowerShell ou Prompt de Comando):
 .\scripts\doc-register.bat rent-scan --config config.json
 ```
 
+O launcher procura `.venv`, depois `venv`, e por fim o Python instalado no
+Windows. Em todos os casos usa o código em `src` deste repositório.
+
 O comando usa as colunas `document_category`, `document_type`,
 `document_subtype` ou `contract_type` do Excel como filtro de elegibilidade.
 Extrai somente a Cláusula 5.ª (Renda e Forma de Pagamento): a renda anual do
