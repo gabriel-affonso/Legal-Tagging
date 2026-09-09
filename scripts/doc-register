@@ -1,0 +1,7 @@
+#!/bin/sh
+# Always execute the code in this checkout.  This avoids accidentally running
+# an older non-editable package installed in the virtual environment.
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$project_dir/.venv/bin/python" -m doc_register "$@"
