@@ -22,12 +22,14 @@ import unicodedata
 from .config import AppConfig
 from .pdf_text import run_ocrmypdf
 from .registry import _column_letter, _workbook_lock
+from .document_ai_v2 import DocumentAIV2Pipeline, V2Config
 
 
 LOGGER = logging.getLogger(__name__)
 
 RENT_SHEET_NAME = "Rent Extraction"
 PIPELINE_VERSION = "rent-clause-2.0"
+V2_PIPELINE_VERSION = "rent-document-ai-v2.0.0"
 LEGACY_RENT_COLUMNS = (
     "pipeline_version",
     "processed_at",
@@ -53,6 +55,7 @@ RENT_COLUMNS = LEGACY_RENT_COLUMNS + (
     "effective_occupied_area_ha", "annual_rent_total_eur", "rent_frequency",
     "full_rent_start_trigger", "rent_update_rule", "reservation_start_triggers",
     "reservation_end_trigger", "financial_extraction_json", "review_reasons",
+    "canonical_document_path", "provenance_json", "processing_report_json",
 )
 
 _PAGE_MARKER = re.compile(r"^\[Page\s+(\d+)\]\s*$", re.IGNORECASE | re.MULTILINE)
@@ -180,8 +183,11 @@ class RentClauseResult:
 class LeaseRentExtractionProcessor:
     """Read only already-labelled lease contracts and extract clause 5 values."""
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, *, pipeline: str = "legacy"):
         self.config = config
+        if pipeline not in {"legacy", "v2"}:
+            raise ValueError("pipeline must be legacy or v2")
+        self.pipeline = pipeline
 
     def scan_once(self, *, force: bool = False) -> int:
         self.config.ensure_directories()
@@ -202,7 +208,7 @@ class LeaseRentExtractionProcessor:
 
     def _process_contract(self, contract: WorkbookContract) -> dict[str, object]:
         base = {
-            "pipeline_version": PIPELINE_VERSION,
+            "pipeline_version": V2_PIPELINE_VERSION if self.pipeline == "v2" else PIPELINE_VERSION,
             "processed_at": _timestamp(),
             "source_sheet": contract.source_sheet,
             "source_row": contract.source_row,
@@ -215,6 +221,9 @@ class LeaseRentExtractionProcessor:
                 "status": "source_file_not_found",
                 "extraction_notes": "O Excel identifica o contrato, mas o caminho do PDF não está disponível.",
             }
+
+        if self.pipeline == "v2":
+            return self._process_contract_v2(contract, base)
 
         # Pages 8 and 9 are the normal location.  Native text is tried first;
         # this keeps the pass fast for born-digital contracts.
@@ -287,6 +296,34 @@ class LeaseRentExtractionProcessor:
             "review_reasons": "; ".join(extracted.review_reasons),
             "text_source": text_source,
             "extraction_notes": " ".join(notes),
+        }
+
+    def _process_contract_v2(self, contract: WorkbookContract, base: dict[str, object]) -> dict[str, object]:
+        """Use canonical visual reading order; legacy PDF text is comparison-only."""
+        cache_root = self.config.processing_dir / "document-ai-v2-cache"
+        canonical = DocumentAIV2Pipeline(cache_root, V2Config()).process(contract.source_file_path)
+        extracted = extract_rent_clause(canonical["canonical_text"])
+        reasons = list(extracted.review_reasons)
+        if canonical["quality"]["warnings"]:
+            reasons.append("document_ai_v2_page_failure")
+        return {
+            **base,
+            "status": extracted.status if not canonical["quality"]["warnings"] else "needs_review_visual_parse",
+            "annual_rent_eur": _decimal_for_excel(extracted.annual_rent.value), "annual_rent_text": extracted.annual_rent.display,
+            "annual_rent_page": extracted.annual_rent.page or "", "annual_rent_evidence": extracted.annual_rent.evidence,
+            "rent_amount_type": extracted.rent_amount_type or "", "rent_rate_eur_per_ha_year": _decimal_for_excel(extracted.rent_rate_eur_per_ha_year),
+            "fixed_annual_rent_eur": _decimal_for_excel(extracted.fixed_annual_rent_eur), "effective_occupied_area_ha": _decimal_for_excel(extracted.effective_occupied_area_ha),
+            "annual_rent_total_eur": _decimal_for_excel(extracted.annual_rent_total_eur), "rent_frequency": extracted.rent_frequency or "",
+            "full_rent_start_trigger": extracted.full_rent_start_trigger or "", "rent_update_rule": extracted.rent_update_rule or "",
+            "reservation_title_percent": _decimal_for_excel(extracted.reservation_percent.value), "reservation_title_percent_text": extracted.reservation_percent.display,
+            "reservation_title_page": extracted.reservation_percent.page or "", "reservation_title_evidence": extracted.reservation_percent.evidence,
+            "reservation_start_triggers": ", ".join(extracted.reservation_start_triggers), "reservation_end_trigger": extracted.reservation_end_trigger or "",
+            "financial_extraction_json": json.dumps(extracted.as_financial_record(), ensure_ascii=False, separators=(",", ":")),
+            "review_reasons": "; ".join(reasons), "text_source": "canonical_visual_reconstruction_v2",
+            "extraction_notes": "A camada OCR legada não determinou a ordem de leitura.",
+            "canonical_document_path": str(cache_root / canonical["document"]["sha256"]),
+            "provenance_json": json.dumps(_rent_provenance(canonical, extracted), ensure_ascii=False, separators=(",", ":")),
+            "processing_report_json": json.dumps(canonical["processing"], ensure_ascii=False, separators=(",", ":")),
         }
 
 
@@ -427,6 +464,26 @@ def _excerpt(text: str, start: int, end: int) -> str:
 
 def _result_score(result: RentClauseResult) -> int:
     return int(result.annual_rent.value is not None) + int(result.reservation_percent.value is not None)
+
+
+def _rent_provenance(canonical: dict[str, object], result: RentClauseResult) -> dict[str, list[dict[str, object]]]:
+    """Map rent evidence to visual blocks for audit/highlighting.
+
+    It intentionally returns no fabricated provenance when a visual page failed.
+    """
+    values = {"annual_rent": result.annual_rent, "reservation_percent": result.reservation_percent}
+    output: dict[str, list[dict[str, object]]] = {name: [] for name in values}
+    for name, evidence in values.items():
+        if not evidence.evidence:
+            continue
+        needle = _plain(evidence.display or evidence.evidence)
+        for page in canonical.get("pages", []):
+            for block in page.get("blocks", []):
+                haystack = _plain(str(block.get("text", "")))
+                if needle and needle in haystack:
+                    output[name].append({"page": page["number"], "block_id": block["id"], "bbox": block["bbox"],
+                                         "source_text": block["text"], "source_engine": block["source_engine"]})
+    return output
 
 
 def _read_pdf_pages(path: Path, page_numbers: tuple[int, ...]) -> str:
@@ -593,7 +650,7 @@ def _ensure_result_headers(sheet) -> None:
         return
     # v1 is a prefix of v2.  Append the new fields without invalidating prior
     # runs; an unrelated worksheet layout remains a deliberate hard error.
-    if tuple(existing) == LEGACY_RENT_COLUMNS:
+    if tuple(existing) == LEGACY_RENT_COLUMNS or tuple(existing) == RENT_COLUMNS[:len(existing)]:
         for column, name in enumerate(RENT_COLUMNS, start=1):
             sheet.cell(row=1, column=column, value=name)
         return

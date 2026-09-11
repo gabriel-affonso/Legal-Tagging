@@ -1,0 +1,18 @@
+# CPU-first limits. Values can be overridden by the deployment configuration.
+hardware:
+  max_memory_mb: 12000
+  max_workers: 1
+render:
+  dpi: 250
+routing:
+  native_text_min_quality: 0.90
+  rapidocr_min_confidence: 0.82
+ocr:
+  backend: onnxruntime
+  language: pt
+paddleocr_vl:
+  enabled: false
+  device: cpu
+  max_concurrent_pages: 1
+debug:
+  save_artifacts: false

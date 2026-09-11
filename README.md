@@ -208,6 +208,21 @@ No Windows (PowerShell ou Prompt de Comando):
 O launcher procura `.venv`, depois `venv`, e por fim o Python instalado no
 Windows. Em todos os casos usa o código em `src` deste repositório.
 
+Para refazer a busca com a nova infraestrutura, sem confiar na ordem OCR já
+embutida no PDF, use:
+
+```bash
+./scripts/doc-register rent-scan --pipeline v2 --force --config config.json
+./scripts/doc-register rent-inspect --pdf /caminho/contrato.pdf --config config.json
+```
+
+O V2 inspeciona cada página, escolhe a rota mais barata, reconstrói linhas pela
+geometria visual e grava cache canónico, bboxes/proveniência e métricas no
+resultado. RapidOCR é opcional (instale `rapidocr-onnxruntime` para scans); se
+não estiver instalado, a página falha isoladamente e é marcada para revisão.
+Os limites CPU/RAM e o Compose estão em `config/document_ai_v2.yaml` e
+`docker-compose.yml`.
+
 O comando usa as colunas `document_category`, `document_type`,
 `document_subtype` ou `contract_type` do Excel como filtro de elegibilidade.
 Extrai somente a Cláusula 5.ª (Renda e Forma de Pagamento): a renda anual do

@@ -1,0 +1,26 @@
+services:
+  document-worker:
+    build:
+      context: .
+      dockerfile: docker/document-worker/Dockerfile
+    mem_limit: 12g
+    cpus: 4
+    volumes:
+      - ./data/input:/app/data/input
+      - ./data/output:/app/data/output
+      - ./data/cache:/app/data/cache
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./config.json:/app/config.json:ro
+    environment:
+      MAX_WORKERS: "1"
+      MAX_CONCURRENT_PAGES: "1"
+      MAX_MEMORY_MB: "12000"
+      OMP_NUM_THREADS: "4"
+      ORT_NUM_THREADS: "4"
+      PADDLE_NUM_THREADS: "4"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import doc_register.document_ai_v2"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

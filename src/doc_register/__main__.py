@@ -11,6 +11,7 @@ from .config import AppConfig
 from .processor import DocumentProcessor
 from .property_processor import PropertyExtractionProcessor
 from .rent_processor import LeaseRentExtractionProcessor
+from .document_ai_v2 import DocumentAIV2Pipeline, V2Config
 
 
 def _configure_logging(log_dir: Path, log_level: str) -> None:
@@ -40,10 +41,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="scan",
-        choices=["scan", "watch", "property-scan", "property-watch", "rent-scan", "normalize"],
+        choices=["scan", "watch", "property-scan", "property-watch", "rent-scan", "rent-inspect", "normalize"],
         help="Run the main register or the independent property extraction pipeline.",
     )
     parser.add_argument("--config", default="config.json", help="Path to configuration JSON.")
+    parser.add_argument("--pdf", type=Path, help="With rent-inspect, PDF to inspect without running OCR models.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     parser.add_argument(
         "--step",
@@ -97,6 +99,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="With rent-scan, re-extract contracts already present in 'Rent Extraction'.",
     )
     parser.add_argument(
+        "--pipeline",
+        choices=["legacy", "v2"],
+        default="legacy",
+        help="With rent-scan, choose the historical text path or Document AI v2 visual reconstruction.",
+    )
+    parser.add_argument(
         "--output-format",
         choices=["legacy", "normalized", "both"],
         help="Step 4.0 output: historical register, normalized workbook, or both.",
@@ -121,6 +129,10 @@ def main() -> None:
         parser.error("--property-table is available only with scan or watch")
     if args.force and args.command != "rent-scan":
         parser.error("--force is available only with rent-scan")
+    if args.pipeline != "legacy" and args.command != "rent-scan":
+        parser.error("--pipeline is available only with rent-scan")
+    if args.command == "rent-inspect" and args.pdf is None:
+        parser.error("rent-inspect requires --pdf /path/to/contract.pdf")
     if args.vision_recall_last is not None and args.vision_recall_last <= 0:
         parser.error("--vision-recall-last must be greater than zero")
     if args.last is not None and args.last <= 0:
@@ -148,12 +160,17 @@ def main() -> None:
         parser.error("config.json: output_format must be legacy, normalized, or both")
     _configure_logging(config.log_dir, args.log_level)
     config.ensure_directories()
+    if args.command == "rent-inspect":
+        inspector = DocumentAIV2Pipeline(config.processing_dir / "document-ai-v2-cache", V2Config())
+        for feature in inspector.inspect(args.pdf.expanduser().resolve()):
+            logging.info("page=%s route=%s text_quality=%.2f chars=%s images=%s", feature.page, inspector.router.classify(feature), feature.text_layer_quality, feature.text_chars, feature.image_count)
+        return
     if args.command == "normalize":
         counts = DocumentProcessor(config).normalized_register.process_pending()
         logging.info("Step 4.0 normalized pending entries: %s", counts)
         return
     if args.command == "rent-scan":
-        processed = LeaseRentExtractionProcessor(config).scan_once(force=args.force)
+        processed = LeaseRentExtractionProcessor(config, pipeline=args.pipeline).scan_once(force=args.force)
         logging.info("Rent clause scan complete. Processed %s eligible contract(s).", processed)
         return
     if args.vision_recall or args.vision_recall_last is not None:
