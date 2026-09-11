@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
+import json
 import logging
 from pathlib import Path
 import re
@@ -26,8 +27,8 @@ from .registry import _column_letter, _workbook_lock
 LOGGER = logging.getLogger(__name__)
 
 RENT_SHEET_NAME = "Rent Extraction"
-PIPELINE_VERSION = "rent-clause-1.0"
-RENT_COLUMNS = (
+PIPELINE_VERSION = "rent-clause-2.0"
+LEGACY_RENT_COLUMNS = (
     "pipeline_version",
     "processed_at",
     "status",
@@ -47,23 +48,24 @@ RENT_COLUMNS = (
     "text_source",
     "extraction_notes",
 )
+RENT_COLUMNS = LEGACY_RENT_COLUMNS + (
+    "rent_amount_type", "rent_rate_eur_per_ha_year", "fixed_annual_rent_eur",
+    "effective_occupied_area_ha", "annual_rent_total_eur", "rent_frequency",
+    "full_rent_start_trigger", "rent_update_rule", "reservation_start_triggers",
+    "reservation_end_trigger", "financial_extraction_json", "review_reasons",
+)
 
 _PAGE_MARKER = re.compile(r"^\[Page\s+(\d+)\]\s*$", re.IGNORECASE | re.MULTILINE)
 _CLAUSE_START = re.compile(
-    r"cl[aá]usula\s+(?:quinta\b|5\s*(?:\.|º|ª|o|a)?)",
+    r"(?:cl[aá]usula\s*(?:n[.º°o]\s*)?(?:quinta\b|5\s*(?:\.|º|ª|o|a)?)[^\n]{0,120}|renda\s+e\s+forma\s+de\s+pagamento)",
     re.IGNORECASE,
 )
 _CLAUSE_END = re.compile(
     r"cl[aá]usula\s+(?:sexta\b|6\s*(?:\.|º|ª|o|a)?)",
     re.IGNORECASE,
 )
-_MONEY = r"(?:€\s*)?(\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|\d+(?:,\d{2})?)(?:\s*(EUR|€))?"
-_ANNUAL_RENT = re.compile(
-    r"renda\s+anual(?:\s+devida)?(?:\s+pela\s+arrendat[aá]ria)?(?:\s+ao\s+senhorio)?"
-    r"(?:\s+(?:corresponde\s+a|[ée]\s+de|fixa-se\s+em|ser[aá]\s+de|no\s+valor\s+de))?"
-    r"\s*" + _MONEY,
-    re.IGNORECASE,
-)
+_MONEY = r"(?:€\s*)?(\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|\d+(?:,\d{2})?)(?:\s*(EUR|€|euros?))?"
+_ANNUAL_RENT = re.compile(r"renda\s+anual.{0,180}?" + _MONEY, re.IGNORECASE | re.DOTALL)
 _RESERVATION_PERCENT = re.compile(
     r"(?:pagamento\s+anual\s+de\s+)?"
     r"(\d{1,3}(?:[,.]\d+)?)\s*%"
@@ -95,6 +97,35 @@ class ValueEvidence:
 class RentClauseResult:
     annual_rent: ValueEvidence
     reservation_percent: ValueEvidence
+    rent_clause_found: bool = False
+    rent_clause_title: str | None = None
+    rent_clause_number: str | None = None
+    rent_amount_type: str | None = None
+    rent_rate_eur_per_ha_year: Decimal | None = None
+    fixed_annual_rent_eur: Decimal | None = None
+    approximate_contract_area_ha: Decimal | None = None
+    effective_occupied_area_ha: Decimal | None = None
+    annual_rent_total_eur: Decimal | None = None
+    annual_rent_formula: str | None = None
+    rent_frequency: str | None = None
+    full_rent_start_trigger: str | None = None
+    first_full_rent_due_rule: str | None = None
+    subsequent_rent_due_rule: str | None = None
+    rent_update_rule: str | None = None
+    negative_update_allowed: bool | None = None
+    payment_allocated_by_ownership_shares: bool | None = None
+    reservation_payment_required: bool | None = None
+    reservation_start_triggers: tuple[str, ...] = ()
+    reservation_end_trigger: str | None = None
+    reservation_first_due_rule: str | None = None
+    reservation_subsequent_due_rule: str | None = None
+    reservation_prorata_rule: str | None = None
+    reservation_overpayment_compensation_rule: str | None = None
+    source_pages: tuple[int, ...] = ()
+    rent_timing_evidence: str = ""
+    reservation_evidence: str = ""
+    prorata_evidence: str = ""
+    review_reasons: tuple[str, ...] = ()
 
     @property
     def status(self) -> str:
@@ -103,6 +134,47 @@ class RentClauseResult:
         if self.annual_rent.value is not None or self.reservation_percent.value is not None:
             return "needs_review_partial"
         return "needs_review_not_found"
+
+    def as_financial_record(self) -> dict[str, object]:
+        """Stable, JSON-serialisable contract-finance record for downstream users."""
+        number = lambda value: float(value) if value is not None else None
+        return {
+            "document_financial_type": "lease_rent",
+            "rent_clause_found": self.rent_clause_found,
+            "rent_clause_title": self.rent_clause_title,
+            "rent_clause_number": self.rent_clause_number,
+            "rent_amount_type": self.rent_amount_type,
+            "rent_rate_eur_per_ha_year": number(self.rent_rate_eur_per_ha_year),
+            "fixed_annual_rent_eur": number(self.fixed_annual_rent_eur),
+            "currency": "EUR",
+            "rent_frequency": self.rent_frequency,
+            "approximate_contract_area_ha": number(self.approximate_contract_area_ha),
+            "effective_occupied_area_ha": number(self.effective_occupied_area_ha),
+            "annual_rent_total_eur": number(self.annual_rent_total_eur),
+            "annual_rent_formula": self.annual_rent_formula,
+            "full_rent_start_trigger": self.full_rent_start_trigger,
+            "first_full_rent_due_rule": self.first_full_rent_due_rule,
+            "subsequent_rent_due_rule": self.subsequent_rent_due_rule,
+            "rent_update_rule": self.rent_update_rule,
+            "negative_update_allowed": self.negative_update_allowed,
+            "payment_allocated_by_ownership_shares": self.payment_allocated_by_ownership_shares,
+            "reservation_payment_required": self.reservation_payment_required,
+            "reservation_percentage": number(self.reservation_percent.value),
+            "reservation_rate": number(self.reservation_percent.value / Decimal("100")) if self.reservation_percent.value is not None else None,
+            "reservation_basis": "annual_rent" if self.reservation_percent.value is not None else None,
+            "reservation_frequency": "annual" if self.reservation_percent.value is not None else None,
+            "reservation_start_triggers": list(self.reservation_start_triggers),
+            "reservation_first_due_rule": self.reservation_first_due_rule,
+            "reservation_subsequent_due_rule": self.reservation_subsequent_due_rule,
+            "reservation_end_trigger": self.reservation_end_trigger,
+            "reservation_prorata_rule": self.reservation_prorata_rule,
+            "reservation_overpayment_compensation_rule": self.reservation_overpayment_compensation_rule,
+            "source_pages": list(self.source_pages),
+            "evidence": {"rent_rate_quote": self.annual_rent.evidence or None, "rent_timing_quote": self.rent_timing_evidence or None,
+                         "reservation_quote": self.reservation_evidence or None, "prorata_quote": self.prorata_evidence or None},
+            "ocr_observations": [], "confidence": 1.0 if self.status == "processed" else 0.65 if self.status == "needs_review_partial" else 0.0,
+            "status": self.status, "review_reasons": list(self.review_reasons),
+        }
 
 
 class LeaseRentExtractionProcessor:
@@ -197,30 +269,81 @@ class LeaseRentExtractionProcessor:
             "annual_rent_text": extracted.annual_rent.display,
             "annual_rent_page": extracted.annual_rent.page or "",
             "annual_rent_evidence": extracted.annual_rent.evidence,
+            "rent_amount_type": extracted.rent_amount_type or "",
+            "rent_rate_eur_per_ha_year": _decimal_for_excel(extracted.rent_rate_eur_per_ha_year),
+            "fixed_annual_rent_eur": _decimal_for_excel(extracted.fixed_annual_rent_eur),
+            "effective_occupied_area_ha": _decimal_for_excel(extracted.effective_occupied_area_ha),
+            "annual_rent_total_eur": _decimal_for_excel(extracted.annual_rent_total_eur),
+            "rent_frequency": extracted.rent_frequency or "",
+            "full_rent_start_trigger": extracted.full_rent_start_trigger or "",
+            "rent_update_rule": extracted.rent_update_rule or "",
             "reservation_title_percent": _decimal_for_excel(extracted.reservation_percent.value),
             "reservation_title_percent_text": extracted.reservation_percent.display,
             "reservation_title_page": extracted.reservation_percent.page or "",
             "reservation_title_evidence": extracted.reservation_percent.evidence,
+            "reservation_start_triggers": ", ".join(extracted.reservation_start_triggers),
+            "reservation_end_trigger": extracted.reservation_end_trigger or "",
+            "financial_extraction_json": json.dumps(extracted.as_financial_record(), ensure_ascii=False, separators=(",", ":")),
+            "review_reasons": "; ".join(extracted.review_reasons),
             "text_source": text_source,
             "extraction_notes": " ".join(notes),
         }
 
 
 def extract_rent_clause(text: str) -> RentClauseResult:
-    """Extract only annual rent and reservation percentage from clause 5.
+    """Extract the financial rules in the rent clause without inferring missing area.
 
-    The expressions deliberately require their legal labels.  A bare monetary
-    value or percentage elsewhere in the contract is never published.
+    This remains deterministic: the wider record is an auditable schema, not an
+    LLM interpretation.  Every populated value is tied to the bounded clause.
     """
     clause_text = _clause_five_text(text)
-    annual_matches = list(_ANNUAL_RENT.finditer(clause_text))
+    if not clause_text:
+        return RentClauseResult(_empty_evidence(), _empty_evidence(), review_reasons=("rent_clause_not_located",))
+    annual_matches = [m for m in _ANNUAL_RENT.finditer(clause_text) if re.search(r"(?:EUR|€|euros?)", m[0], re.I)]
     reservation_matches = list(_RESERVATION_PERCENT.finditer(clause_text))
     annual = _money_evidence(annual_matches[0], clause_text) if annual_matches else _empty_evidence()
-    reservation = (
-        _percent_evidence(reservation_matches[0], clause_text)
-        if reservation_matches else _empty_evidence()
+    reservation = _reservation_evidence(clause_text, reservation_matches)
+    rent_context = _local_context(clause_text, annual_matches[0]) if annual_matches else ""
+    reservation_context = _local_context(clause_text, reservation_matches[0]) if reservation_matches else reservation.evidence
+    per_hectare = bool(re.search(r"por\s+hectare|/\s*ha\b|hectare\s+efetivamente\s+ocup", rent_context, re.I))
+    amount_type = "rate_per_area" if annual.value is not None and per_hectare else "fixed_annual_rent" if annual.value is not None else None
+    start_triggers = []
+    if reservation.value is not None:
+        if re.search(r"aprova[cç][aã]o\s+ambiental|declara[cç][aã]o\s+de\s+impacte", reservation_context, re.I):
+            start_triggers.append("environmental_approval")
+        if re.search(r"licen[cç]a\s+de\s+produ[cç][aã]o", reservation_context, re.I):
+            start_triggers.append("production_license_issued")
+    pages = tuple(sorted(set(_all_pages_for_text(clause_text))))
+    reasons = []
+    if annual.value is None: reasons.append("annual_rent_not_found_in_rent_clause")
+    if reservation.value is None: reasons.append("reservation_percentage_not_found_in_rent_clause")
+    if amount_type == "rate_per_area" and re.search(r"(?:a definir|ser[aá]\s+definida|ap[oó]s\s+.*impacte)", clause_text, re.I):
+        reasons.append("effective_occupied_area_not_determined")
+    return RentClauseResult(
+        annual_rent=annual, reservation_percent=reservation, rent_clause_found=True,
+        rent_clause_title="Renda e Forma de Pagamento" if re.search(r"renda\s+e\s+forma\s+de\s+pagamento", clause_text, re.I) else None,
+        rent_clause_number="5" if re.search(r"cl[aá]usula\s*(?:n[.º°o]\s*)?(?:quinta|5)", clause_text, re.I) else None,
+        rent_amount_type=amount_type, rent_rate_eur_per_ha_year=annual.value if amount_type == "rate_per_area" else None,
+        fixed_annual_rent_eur=annual.value if amount_type == "fixed_annual_rent" else None,
+        annual_rent_formula="rent_rate_eur_per_ha_year * effective_occupied_area_ha" if amount_type == "rate_per_area" else None,
+        rent_frequency="annual" if annual.value is not None else None,
+        full_rent_start_trigger=_trigger(clause_text, r"condi[cç][aã]o\s+suspensiva", "suspensive_condition_satisfied"),
+        first_full_rent_due_rule=_rule_after(clause_text, r"primeira\s+renda\s+(?:ser[aá]|dever[aá]|vence|paga).{0,160}"),
+        subsequent_rent_due_rule=_rule_after(clause_text, r"(?:rendas?|pagamentos?)\s+seguintes\s+(?:ser[aá]|dever[aá]|vence|pagos?).{0,160}"),
+        rent_update_rule=_rule_after(clause_text, r"atualiza[cç][aã]o.{0,180}"),
+        negative_update_allowed=False if re.search(r"n[aã]o\s+poder[aá]\s+ser\s+inferior|nunca\s+inferior", clause_text, re.I) else None,
+        payment_allocated_by_ownership_shares=bool(re.search(r"propor[cç][aã]o\s+das\s+respetivas?\s+quotas", clause_text, re.I)) or None,
+        reservation_payment_required=reservation.value is not None,
+        reservation_start_triggers=tuple(start_triggers),
+        reservation_end_trigger="construction_license_issued" if re.search(r"at[eé]\s+[aà]\s+emiss[aã]o\s+da\s+licen[cç]a\s+de\s+constru[cç][aã]o", reservation_context, re.I) else None,
+        reservation_first_due_rule=_rule_after(reservation_context, r"(?:at[eé]|at[eé]\s+ao).{0,180}"),
+        reservation_subsequent_due_rule=_rule_after(reservation_context, r"(?:pagamento|reserva)\s+anual(?:mente)?\s+(?:ser[aá]|dever[aá]|vence|pago).{0,160}"),
+        reservation_prorata_rule=_rule_after(clause_text, r"(?:proporcional|pro\s*rata).{0,220}"),
+        reservation_overpayment_compensation_rule=_rule_after(clause_text, r"(?:compensad|excesso).{0,220}"),
+        source_pages=pages, rent_timing_evidence=_excerpt_for_pattern(clause_text, r"(?:paga|pagamento).{0,180}"),
+        reservation_evidence=reservation.evidence, prorata_evidence=_excerpt_for_pattern(clause_text, r"(?:proporcional|pro\s*rata|compensad).{0,220}"),
+        review_reasons=tuple(reasons),
     )
-    return RentClauseResult(annual_rent=annual, reservation_percent=reservation)
 
 
 def _clause_five_text(text: str) -> str:
@@ -235,6 +358,29 @@ def _clause_five_text(text: str) -> str:
     return text[clause_start: end.start() if end else len(text)]
 
 
+def _local_context(text: str, match: re.Match[str], radius: int = 360) -> str:
+    """Keep event wording adjacent to a supported financial match."""
+    return text[max(0, match.start() - radius): min(len(text), match.end() + radius)]
+
+
+def _rule_after(text: str, pattern: str) -> str | None:
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    return _excerpt(text, match.start(), match.end()) if match else None
+
+
+def _trigger(text: str, pattern: str, value: str) -> str | None:
+    return value if re.search(pattern, text, re.IGNORECASE) else None
+
+
+def _excerpt_for_pattern(text: str, pattern: str) -> str:
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    return _excerpt(text, match.start(), match.end()) if match else ""
+
+
+def _all_pages_for_text(text: str) -> list[int]:
+    return [int(match.group(1)) for match in _PAGE_MARKER.finditer(text)]
+
+
 def _money_evidence(match: re.Match[str], text: str) -> ValueEvidence:
     number, currency = match.group(1), match.group(2) or "EUR"
     value = _parse_portuguese_number(number)
@@ -244,6 +390,17 @@ def _money_evidence(match: re.Match[str], text: str) -> ValueEvidence:
 def _percent_evidence(match: re.Match[str], text: str) -> ValueEvidence:
     number = match.group(1)
     return ValueEvidence(_parse_portuguese_number(number), f"{number}%", _page_for_offset(text, match.start()), _excerpt(text, match.start(), match.end()))
+
+
+def _reservation_evidence(text: str, numeric_matches: list[re.Match[str]]) -> ValueEvidence:
+    if numeric_matches:
+        return _percent_evidence(numeric_matches[0], text)
+    # Written forms are accepted only inside the same bounded reservation rule;
+    # this avoids turning unrelated prose percentages into financial data.
+    words = re.search(r"(?:pagamento\s+anual\s+de\s+)?(?:25|vinte\s+e\s+cinco)\s+por\s+cento.{0,260}?t[íi]tulo\s+de\s+reserva", text, re.I | re.DOTALL)
+    if words:
+        return ValueEvidence(Decimal("25"), "25%", _page_for_offset(text, words.start()), _excerpt(text, words.start(), words.end()))
+    return _empty_evidence()
 
 
 def _empty_evidence() -> ValueEvidence:
@@ -431,13 +588,19 @@ def _upsert_result(workbook_path: Path, payload: dict[str, object]) -> None:
 
 
 def _ensure_result_headers(sheet) -> None:
-    existing = [str(sheet.cell(row=1, column=index).value or "") for index in range(1, len(RENT_COLUMNS) + 1)]
-    if tuple(existing) == RENT_COLUMNS:
+    existing = [str(sheet.cell(row=1, column=index).value or "") for index in range(1, sheet.max_column + 1)]
+    if tuple(existing[:len(RENT_COLUMNS)]) == RENT_COLUMNS:
         return
-    if sheet.max_row > 1:
-        raise RuntimeError(f"Worksheet '{RENT_SHEET_NAME}' has an incompatible layout.")
-    for column, name in enumerate(RENT_COLUMNS, start=1):
-        sheet.cell(row=1, column=column, value=name)
+    # v1 is a prefix of v2.  Append the new fields without invalidating prior
+    # runs; an unrelated worksheet layout remains a deliberate hard error.
+    if tuple(existing) == LEGACY_RENT_COLUMNS:
+        for column, name in enumerate(RENT_COLUMNS, start=1):
+            sheet.cell(row=1, column=column, value=name)
+        return
+    if sheet.max_row <= 1:
+        for column, name in enumerate(RENT_COLUMNS, start=1): sheet.cell(row=1, column=column, value=name)
+        return
+    raise RuntimeError(f"Worksheet '{RENT_SHEET_NAME}' has an incompatible layout.")
 
 
 def _format_result_sheet(sheet) -> None:

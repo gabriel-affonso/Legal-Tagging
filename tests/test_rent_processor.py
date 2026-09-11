@@ -50,6 +50,48 @@ A renda anual corresponde a 2.000,00 EUR e 30% é pago a título de reserva.
     assert result.status == "needs_review_not_found"
 
 
+def test_preserves_rate_per_hectare_without_inventing_a_total_or_area() -> None:
+    result = extract_rent_clause(
+        """[Page 8]
+Clausula 5 (Renda e Forma de Pagamento)
+A renda anual corresponde a 1 000,00 EUR por hectare efetivamente ocupado.
+[Page 9]
+Pagamento anual de 25 por cento do valor da renda anual, a título de reserva,
+após aprovação ambiental e emissão da Licença de Produção, até à emissão da Licença de Construção.
+O pagamento é proporcional e o excesso será compensado com a primeira renda.
+Cláusula 6.ª
+"""
+    )
+
+    assert result.rent_amount_type == "rate_per_area"
+    assert result.rent_rate_eur_per_ha_year == 1000
+    assert result.annual_rent_total_eur is None
+    assert result.effective_occupied_area_ha is None
+    assert result.reservation_percent.value == 25
+    assert result.status == "processed"
+
+
+def test_extracts_structured_reservation_events_across_pages() -> None:
+    result = extract_rent_clause(
+        """[Page 8]
+CLÁUSULA 5.ª — Renda e Forma de Pagamento
+A renda anual é de 1.000,00 EUR por hectare efetivamente ocupado.
+[Page 9]
+A Arrendatária pagará anualmente 25% do valor da renda anual, a título de reserva,
+após aprovação ambiental e emissão da Licença de Produção, até à emissão da Licença de Construção.
+CLÁUSULA 6.ª
+"""
+    )
+
+    record = result.as_financial_record()
+    assert record["rent_rate_eur_per_ha_year"] == 1000.0
+    assert record["annual_rent_formula"] == "rent_rate_eur_per_ha_year * effective_occupied_area_ha"
+    assert record["reservation_rate"] == 0.25
+    assert record["reservation_start_triggers"] == ["environmental_approval", "production_license_issued"]
+    assert record["reservation_end_trigger"] == "construction_license_issued"
+    assert record["source_pages"] == [8, 9]
+
+
 def test_excel_eligibility_accepts_only_lease_classification() -> None:
     assert _is_lease_contract_row({"document_category": "lease_contract"})
     assert _is_lease_contract_row({"document_type": "Contrato de Arrendamento Rural"})
